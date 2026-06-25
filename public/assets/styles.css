@@ -100,3 +100,34 @@
     .report-filters{width:100%;justify-content:stretch}
     .report-filters label,.report-filters button,.report-filters .btn{width:100%}
 }
+.dashboard-tabs{
+    display:flex;
+    gap:10px;
+    margin-top:24px;
+    padding:8px;
+    background:#eaf2ff;
+    border:1px solid var(--border);
+    border-radius:18px;
+    box-shadow:0 14px 34px rgba(15,23,42,.06);
+    width:max-content;
+    max-width:100%;
+}
+.tab-button{
+    background:transparent;
+    color:var(--primary-dark);
+    border-radius:13px;
+    box-shadow:none;
+}
+.tab-button.is-active{
+    background:var(--primary);
+    color:#fff;
+}
+.tab-panel[hidden]{display:none}
+.tab-panel .statement-card{margin-top:18px!important}
+@media(max-width:760px){
+    .dashboard-tabs{width:100%;flex-direction:column}
+    .tab-button{width:100%}
+}
+@media print{
+    .tab-panel[hidden]{display:block}
+}

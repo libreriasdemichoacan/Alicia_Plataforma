@@ -5,6 +5,7 @@ require_once app_path('includes/remote_statements.php');
 $user = require_login();
 
 if (($user['account_type'] ?? 'internal') === 'third_party') {
+    $articleReportRequested = isset($_GET['report_from']) || isset($_GET['report_to']);
     $reportFrom = normalize_report_date($_GET['report_from'] ?? null, date('Y-m-01'));
     $reportTo = normalize_report_date($_GET['report_to'] ?? null, date('Y-m-d'));
     if ($reportFrom > $reportTo) {
@@ -32,6 +33,14 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             <p class="muted"><?= e($user['email']) ?></p>
         </div>
     </section>
+    <?php if ($user['third_party_type'] === 'client'): ?>
+    <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard">
+        <button type="button" class="tab-button <?= $articleReportRequested ? '' : 'is-active' ?>" data-tab-target="movements-panel" aria-controls="movements-panel" aria-selected="<?= $articleReportRequested ? 'false' : 'true' ?>">Últimos movimientos</button>
+        <button type="button" class="tab-button <?= $articleReportRequested ? 'is-active' : '' ?>" data-tab-target="article-report-panel" aria-controls="article-report-panel" aria-selected="<?= $articleReportRequested ? 'true' : 'false' ?>">Reporte detalle por artículo</button>
+    </section>
+    <div class="tab-panels">
+        <div id="movements-panel" class="tab-panel <?= $articleReportRequested ? '' : 'is-active' ?>" <?= $articleReportRequested ? 'hidden' : '' ?>>
+    <?php endif; ?>
     <section class="statement-card" style="margin-top:24px">
         <div class="statement-actions no-print"><h2>Últimos movimientos</h2><div class="actions"><button type="button" onclick="window.print()">Imprimir estado</button><a class="btn secondary" href="/export_statement.php">Descargar Excel</a></div></div>
         <div class="print-header"><h2>Estado de cuenta</h2><p><?= e($user['name']) ?><?php if (!empty($user['internal_number'])): ?> · <?= e($user['internal_number']) ?><?php endif; ?></p><p class="muted">Generado el <?= e(date('d/m/Y H:i')) ?></p></div>
@@ -54,6 +63,8 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     </section>
 
     <?php if ($user['third_party_type'] === 'client'): ?>
+        </div>
+        <div id="article-report-panel" class="tab-panel <?= $articleReportRequested ? 'is-active' : '' ?>" <?= $articleReportRequested ? '' : 'hidden' ?>>
     <section class="statement-card" style="margin-top:24px">
         <div class="statement-actions no-print">
             <div>
@@ -80,6 +91,25 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             <p class="muted">El reporte detalle requiere una sucursal remota asignada o la conexión remota global activa.</p>
         <?php endif; ?>
     </section>
+        </div>
+    </div>
+    <script>
+        document.querySelectorAll('[data-tab-target]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const targetId = button.dataset.tabTarget;
+                document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+                    const isActive = tab === button;
+                    tab.classList.toggle('is-active', isActive);
+                    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                });
+                document.querySelectorAll('.tab-panel').forEach((panel) => {
+                    const isActive = panel.id === targetId;
+                    panel.classList.toggle('is-active', isActive);
+                    panel.hidden = !isActive;
+                });
+            });
+        });
+    </script>
     <?php endif; ?>
     <?php
     render_footer();
