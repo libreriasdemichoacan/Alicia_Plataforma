@@ -81,3 +81,22 @@
     .empty-row td::before{display:none}
     .empty-state{text-align:left}
 }
+.report-filters{
+    display:flex;
+    align-items:end;
+    justify-content:flex-end;
+    gap:12px;
+    flex-wrap:wrap;
+}
+.report-filters label{
+    display:grid;
+    gap:6px;
+    color:var(--muted);
+    font-size:.86rem;
+    font-weight:800;
+}
+.report-filters input{min-width:150px}
+@media(max-width:760px){
+    .report-filters{width:100%;justify-content:stretch}
+    .report-filters label,.report-filters button,.report-filters .btn{width:100%}
+}

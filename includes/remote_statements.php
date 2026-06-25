@@ -188,3 +188,96 @@ function build_sale_item_totals(array $items): array
     unset($item);
     return ['items' => $items, 'totals' => $totals];
 }
+
+function normalize_report_date(?string $date, string $fallback): string
+{
+    $date = trim((string)$date);
+    $parsed = DateTime::createFromFormat('Y-m-d', $date);
+    if (!$parsed || $parsed->format('Y-m-d') !== $date) {
+        return $fallback;
+    }
+    return $date;
+}
+
+function remote_article_sales_report(string $customerCode, ?string $from = null, ?string $to = null, ?int $branchId = null): array
+{
+    $customerCode = trim($customerCode);
+    $from = normalize_report_date($from, date('Y-m-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
+
+    if ($customerCode === '') {
+        return ['enabled' => false, 'error' => 'El cliente no tiene número interno configurado.', 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch && !app_config()['db']['remote_reports']['enabled']) {
+        return ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+
+    try {
+        $pdo = $branch ? branch_pdo($branch) : remote_reports_db();
+        $sql = "
+            SELECT libro, codbar, titulo, autor, SUM(sale_quantity) AS sale_quantity, SUM(return_quantity) AS return_quantity
+            FROM (
+                SELECT k.libro, l.codbar, l.titulo, l.autor, SUM(ABS(k.cantidad)) AS sale_quantity, 0 AS return_quantity
+                FROM kardex k
+                INNER JOIN venta v ON v.ccliente = k.cliente AND (k.idtipo = v.doc OR k.idtipo = v.id)
+                INNER JOIN libro l ON l.id = k.libro
+                WHERE k.cliente = :sale_customer
+                  AND v.fecha >= :sale_from
+                  AND v.fecha <= :sale_to
+                  AND k.tipo = '0'
+                GROUP BY k.libro, l.codbar, l.titulo, l.autor
+
+                UNION ALL
+
+                SELECT k.libro, l.codbar, l.titulo, l.autor, 0 AS sale_quantity, SUM(ABS(k.cantidad)) AS return_quantity
+                FROM kardex k
+                INNER JOIN devolucion d ON d.cliente = k.cliente AND (k.idtipo = d.id OR k.idtipo = d.idtipo)
+                INNER JOIN libro l ON l.id = k.libro
+                WHERE k.cliente = :return_customer
+                  AND d.fecha >= :return_from
+                  AND d.fecha <= :return_to
+                  AND k.tipo = '5'
+                GROUP BY k.libro, l.codbar, l.titulo, l.autor
+            ) article_movements
+            GROUP BY libro, codbar, titulo, autor
+            HAVING sale_quantity <> 0 OR return_quantity <> 0
+            ORDER BY titulo
+            LIMIT 2000
+        ";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':sale_customer' => $customerCode,
+            ':sale_from' => $from,
+            ':sale_to' => $to,
+            ':return_customer' => $customerCode,
+            ':return_from' => $from,
+            ':return_to' => $to,
+        ]);
+        $rows = build_article_sales_report_rows($stmt->fetchAll());
+
+        return ['enabled' => true, 'error' => null, 'rows' => $rows['rows'], 'from' => $from, 'to' => $to, 'totals' => $rows['totals']];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar reporte detalle de artículos remoto: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar el reporte detalle por artículos en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+}
+
+function build_article_sales_report_rows(array $rows): array
+{
+    $totals = ['sale' => 0.0, 'return' => 0.0, 'net' => 0.0];
+    foreach ($rows as &$row) {
+        $row['sale_quantity'] = (float)$row['sale_quantity'];
+        $row['return_quantity'] = (float)$row['return_quantity'];
+        $row['net_quantity'] = $row['sale_quantity'] - $row['return_quantity'];
+        $totals['sale'] += $row['sale_quantity'];
+        $totals['return'] += $row['return_quantity'];
+        $totals['net'] += $row['net_quantity'];
+    }
+    unset($row);
+    return ['rows' => $rows, 'totals' => $totals];
+}
