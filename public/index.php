@@ -26,6 +26,14 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     }
     $providerStock = $isProvider ? remote_provider_stock_for_branches((string)($user['internal_number'] ?? ''), $selectedStockBranchIds) : ['enabled' => false, 'error' => null, 'rows' => [], 'branches' => []];
     $stockExportQuery = http_build_query(['stock_branch_ids' => $selectedStockBranchIds]);
+    $providerSalesRequested = isset($_GET['sales_branch_id']) || isset($_GET['sales_from']) || isset($_GET['sales_to']);
+    $salesFrom = normalize_report_date($_GET['sales_from'] ?? null, date('Y-m-01'));
+    $salesTo = normalize_report_date($_GET['sales_to'] ?? null, date('Y-m-d'));
+    if ($salesFrom > $salesTo) {
+        [$salesFrom, $salesTo] = [$salesTo, $salesFrom];
+    }
+    $selectedSalesBranchId = (int)($_GET['sales_branch_id'] ?? ($stockBranches[0]['id'] ?? 0));
+    $providerDetailedSales = $isProvider ? remote_provider_detailed_sales((string)($user['internal_number'] ?? ''), $selectedSalesBranchId, $salesFrom, $salesTo) : ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $salesFrom, 'to' => $salesTo, 'branch' => null];
     $statements = [];
     if ($isClient && !$remoteStatement['enabled']) {
         $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
@@ -48,38 +56,97 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     </section>
 
     <?php if ($isProvider): ?>
-    <section class="statement-card" style="margin-top:24px">
-        <div class="statement-actions no-print">
-            <div>
-                <h2>Stock por sucursal</h2>
-                <p class="muted">Consulta el stock disponible de las editoriales asociadas a tu código interno.</p>
-            </div>
-            <form class="report-filters" method="get">
-                <label>Sucursales
-                    <select name="stock_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
-                        <?php foreach ($stockBranches as $branch): ?>
-                            <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedStockBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <small class="muted">Puedes seleccionar varias sucursales.</small>
-                </label>
-                <button type="submit">Consultar stock</button>
-                <a class="btn secondary" href="/export_provider_stock.php?<?= e($stockExportQuery) ?>">Descargar Excel</a>
-            </form>
-        </div>
-        <?php if (!empty($providerStock['error'])): ?><div class="alert error"><?= e($providerStock['error']) ?></div><?php endif; ?>
-        <?php if (!$stockBranches): ?>
-            <p class="muted">No hay sucursales activas configuradas para consultar stock.</p>
-        <?php elseif ($providerStock['enabled']): ?>
-            <?php if (!empty($providerStock['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerStock['branches'], 'name'))) ?></p><?php endif; ?>
-            <div class="table-responsive" role="region" aria-label="Stock por sucursal" tabindex="0">
-                <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Sucursales</th></tr></thead><tbody>
-                <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
-                <?php if (!$providerStock['rows']): ?><tr><td colspan="7" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
-                </tbody></table>
-            </div>
-        <?php endif; ?>
+    <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard de proveedor">
+        <button type="button" class="tab-button <?= $providerSalesRequested ? '' : 'is-active' ?>" data-tab-target="provider-stock-panel" aria-controls="provider-stock-panel" aria-selected="<?= $providerSalesRequested ? 'false' : 'true' ?>">Stock por sucursal</button>
+        <button type="button" class="tab-button <?= $providerSalesRequested ? 'is-active' : '' ?>" data-tab-target="provider-sales-panel" aria-controls="provider-sales-panel" aria-selected="<?= $providerSalesRequested ? 'true' : 'false' ?>">Venta detallada</button>
     </section>
+    <div class="tab-panels">
+        <div id="provider-stock-panel" class="tab-panel <?= $providerSalesRequested ? '' : 'is-active' ?>" <?= $providerSalesRequested ? 'hidden' : '' ?>>
+            <section class="statement-card" style="margin-top:24px">
+                <div class="statement-actions no-print">
+                    <div>
+                        <h2>Stock por sucursal</h2>
+                        <p class="muted">Consulta el stock disponible de las editoriales asociadas a tu código interno.</p>
+                    </div>
+                    <form class="report-filters" method="get">
+                        <label>Sucursales
+                            <select name="stock_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
+                                <?php foreach ($stockBranches as $branch): ?>
+                                    <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedStockBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="muted">Puedes seleccionar varias sucursales.</small>
+                        </label>
+                        <button type="submit">Consultar stock</button>
+                        <a class="btn secondary" href="/export_provider_stock.php?<?= e($stockExportQuery) ?>">Descargar Excel</a>
+                    </form>
+                </div>
+                <?php if (!empty($providerStock['error'])): ?><div class="alert error"><?= e($providerStock['error']) ?></div><?php endif; ?>
+                <?php if (!$stockBranches): ?>
+                    <p class="muted">No hay sucursales activas configuradas para consultar stock.</p>
+                <?php elseif ($providerStock['enabled']): ?>
+                    <?php if (!empty($providerStock['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerStock['branches'], 'name'))) ?></p><?php endif; ?>
+                    <div class="table-responsive" role="region" aria-label="Stock por sucursal" tabindex="0">
+                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Sucursales</th></tr></thead><tbody>
+                        <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
+                        <?php if (!$providerStock['rows']): ?><tr><td colspan="7" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
+                        </tbody></table>
+                    </div>
+                <?php endif; ?>
+            </section>
+        </div>
+        <div id="provider-sales-panel" class="tab-panel <?= $providerSalesRequested ? 'is-active' : '' ?>" <?= $providerSalesRequested ? '' : 'hidden' ?>>
+            <section class="statement-card" style="margin-top:24px">
+                <div class="statement-actions no-print">
+                    <div>
+                        <h2>Venta detallada</h2>
+                        <p class="muted">Consulta venta neta por artículo para una sucursal y rango de fechas.</p>
+                    </div>
+                    <form class="report-filters" method="get">
+                        <label>Sucursal
+                            <select name="sales_branch_id" required>
+                                <?php foreach ($stockBranches as $branch): ?>
+                                    <option value="<?= (int)$branch['id'] ?>" <?= (int)$selectedSalesBranchId === (int)$branch['id'] ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <label>Desde <input type="date" name="sales_from" value="<?= e($providerDetailedSales['from']) ?>"></label>
+                        <label>Hasta <input type="date" name="sales_to" value="<?= e($providerDetailedSales['to']) ?>"></label>
+                        <button type="submit">Consultar venta</button>
+                    </form>
+                </div>
+                <?php if (!empty($providerDetailedSales['error'])): ?><div class="alert error"><?= e($providerDetailedSales['error']) ?></div><?php endif; ?>
+                <?php if (!$stockBranches): ?>
+                    <p class="muted">No hay sucursales activas configuradas para consultar venta detallada.</p>
+                <?php elseif ($providerDetailedSales['enabled']): ?>
+                    <?php if (!empty($providerDetailedSales['branch'])): ?><p class="muted">Sucursal: <?= e($providerDetailedSales['branch']['name']) ?> · Desde <?= e($providerDetailedSales['from']) ?> hasta <?= e($providerDetailedSales['to']) ?></p><?php endif; ?>
+                    <div class="table-responsive" role="region" aria-label="Venta detallada" tabindex="0">
+                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Venta neta</th></tr></thead><tbody>
+                        <?php foreach ($providerDetailedSales['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><?= e(number_format((float)$row['stock'], 0)) ?></td><td data-label="Venta neta" class="text-money"><strong><?= e(number_format((float)$row['venta_neta'], 0)) ?></strong></td></tr><?php endforeach; ?>
+                        <?php if (!$providerDetailedSales['rows']): ?><tr><td colspan="7" class="muted">Sin venta detallada para este proveedor en el rango seleccionado.</td></tr><?php endif; ?>
+                        </tbody></table>
+                    </div>
+                <?php endif; ?>
+            </section>
+        </div>
+    </div>
+    <script>
+        document.querySelectorAll('[data-tab-target]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const targetId = button.dataset.tabTarget;
+                document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+                    const isActive = tab === button;
+                    tab.classList.toggle('is-active', isActive);
+                    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                });
+                document.querySelectorAll('.tab-panel').forEach((panel) => {
+                    const isActive = panel.id === targetId;
+                    panel.classList.toggle('is-active', isActive);
+                    panel.hidden = !isActive;
+                });
+            });
+        });
+    </script>
     <?php render_footer(); exit; endif; ?>
     <?php if ($user['third_party_type'] === 'client'): ?>
     <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard">

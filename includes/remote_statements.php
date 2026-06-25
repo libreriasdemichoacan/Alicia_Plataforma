@@ -384,3 +384,54 @@ function remote_provider_stock_for_branches(string $providerCode, array $branchI
     $error = $errors ? 'No fue posible consultar stock en: ' . implode(', ', $errors) . '.' : null;
     return ['enabled' => true, 'error' => $error, 'rows' => $rows, 'branches' => $branches];
 }
+
+function remote_provider_detailed_sales(string $providerCode, ?int $branchId = null, ?string $from = null, ?string $to = null): array
+{
+    $providerCode = trim($providerCode);
+    $from = normalize_report_date($from, date('Y-m-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => null];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch) {
+        return ['enabled' => false, 'error' => 'Selecciona una sucursal activa para consultar la venta detallada.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => null];
+    }
+
+    try {
+        $pdo = branch_pdo($branch);
+        $stmt = $pdo->prepare("
+            SELECT
+                l.codbar,
+                l.titulo,
+                l.autor,
+                l.precio,
+                l.cantidad AS stock,
+                e.nombre AS editorial,
+                COALESCE(SUM(CASE WHEN k.tipo = '0' THEN k.cantidad ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN k.tipo = '5' THEN k.cantidad ELSE 0 END), 0) AS venta_neta
+            FROM editorial e
+            INNER JOIN libro l ON e.e_cod = l.editorial
+            LEFT JOIN kardex k ON l.id = k.libro AND k.fecha BETWEEN :fecha_desde AND :fecha_hasta
+            WHERE e.proveedor_cod = :proveedor_cod
+              AND l.inactivo = '0'
+            GROUP BY l.id, e.nombre
+            ORDER BY e.nombre ASC, l.titulo ASC
+            LIMIT 1000
+        ");
+        $stmt->execute([
+            ':proveedor_cod' => $providerCode,
+            ':fecha_desde' => $from,
+            ':fecha_hasta' => $to,
+        ]);
+
+        return ['enabled' => true, 'error' => null, 'rows' => $stmt->fetchAll(), 'from' => $from, 'to' => $to, 'branch' => $branch];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar venta detallada de proveedor: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar la venta detallada en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => $branch];
+    }
+}
