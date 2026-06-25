@@ -34,6 +34,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     }
     $selectedSalesBranchId = (int)($_GET['sales_branch_id'] ?? ($stockBranches[0]['id'] ?? 0));
     $providerDetailedSales = $isProvider ? remote_provider_detailed_sales((string)($user['internal_number'] ?? ''), $selectedSalesBranchId, $salesFrom, $salesTo) : ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $salesFrom, 'to' => $salesTo, 'branch' => null];
+    $salesExportQuery = http_build_query(['sales_branch_id' => $selectedSalesBranchId, 'sales_from' => $salesFrom, 'sales_to' => $salesTo]);
     $statements = [];
     if ($isClient && !$remoteStatement['enabled']) {
         $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
@@ -113,6 +114,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
                         <label>Desde <input type="date" name="sales_from" value="<?= e($providerDetailedSales['from']) ?>"></label>
                         <label>Hasta <input type="date" name="sales_to" value="<?= e($providerDetailedSales['to']) ?>"></label>
                         <button type="submit">Consultar venta</button>
+                        <a class="btn secondary" href="/export_provider_sales.php?<?= e($salesExportQuery) ?>">Exportar a Excel</a>
                     </form>
                 </div>
                 <?php if (!empty($providerDetailedSales['error'])): ?><div class="alert error"><?= e($providerDetailedSales['error']) ?></div><?php endif; ?>

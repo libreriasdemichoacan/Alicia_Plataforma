@@ -429,7 +429,9 @@ function remote_provider_detailed_sales(string $providerCode, ?int $branchId = n
             ':fecha_hasta' => $to,
         ]);
 
-        return ['enabled' => true, 'error' => null, 'rows' => $stmt->fetchAll(), 'from' => $from, 'to' => $to, 'branch' => $branch];
+        $rows = array_values(array_filter($stmt->fetchAll(), fn(array $row): bool => (float)$row['stock'] !== 0.0 || (float)$row['venta_neta'] !== 0.0));
+
+        return ['enabled' => true, 'error' => null, 'rows' => $rows, 'from' => $from, 'to' => $to, 'branch' => $branch];
     } catch (Throwable $exception) {
         error_log('Error al consultar venta detallada de proveedor: ' . $exception->getMessage());
         return ['enabled' => true, 'error' => 'No fue posible consultar la venta detallada en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => $branch];
