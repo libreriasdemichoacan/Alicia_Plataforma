@@ -16,8 +16,16 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
     $articleReport = $isClient ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
     $stockBranches = $isProvider ? array_values(array_filter(report_branches(), fn(array $branch): bool => ($branch['status'] ?? '') === 'active')) : [];
-    $selectedStockBranchId = (int)($_GET['stock_branch_id'] ?? ($stockBranches[0]['id'] ?? 0));
-    $providerStock = $isProvider ? remote_provider_stock((string)($user['internal_number'] ?? ''), $selectedStockBranchId) : ['enabled' => false, 'error' => null, 'rows' => []];
+    $requestedStockBranchIds = $_GET['stock_branch_ids'] ?? ($_GET['stock_branch_id'] ?? []);
+    if (!is_array($requestedStockBranchIds)) {
+        $requestedStockBranchIds = [$requestedStockBranchIds];
+    }
+    $selectedStockBranchIds = array_values(array_unique(array_filter(array_map('intval', $requestedStockBranchIds))));
+    if (!$selectedStockBranchIds && $stockBranches) {
+        $selectedStockBranchIds = [(int)$stockBranches[0]['id']];
+    }
+    $providerStock = $isProvider ? remote_provider_stock_for_branches((string)($user['internal_number'] ?? ''), $selectedStockBranchIds) : ['enabled' => false, 'error' => null, 'rows' => [], 'branches' => []];
+    $stockExportQuery = http_build_query(['stock_branch_ids' => $selectedStockBranchIds]);
     $statements = [];
     if ($isClient && !$remoteStatement['enabled']) {
         $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
@@ -47,24 +55,27 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
                 <p class="muted">Consulta el stock disponible de las editoriales asociadas a tu código interno.</p>
             </div>
             <form class="report-filters" method="get">
-                <label>Sucursal
-                    <select name="stock_branch_id" required>
+                <label>Sucursales
+                    <select name="stock_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
                         <?php foreach ($stockBranches as $branch): ?>
-                            <option value="<?= (int)$branch['id'] ?>" <?= (int)$selectedStockBranchId === (int)$branch['id'] ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                            <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedStockBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
                         <?php endforeach; ?>
                     </select>
+                    <small class="muted">Puedes seleccionar varias sucursales.</small>
                 </label>
                 <button type="submit">Consultar stock</button>
+                <a class="btn secondary" href="/export_provider_stock.php?<?= e($stockExportQuery) ?>">Descargar Excel</a>
             </form>
         </div>
         <?php if (!empty($providerStock['error'])): ?><div class="alert error"><?= e($providerStock['error']) ?></div><?php endif; ?>
         <?php if (!$stockBranches): ?>
             <p class="muted">No hay sucursales activas configuradas para consultar stock.</p>
         <?php elseif ($providerStock['enabled']): ?>
+            <?php if (!empty($providerStock['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerStock['branches'], 'name'))) ?></p><?php endif; ?>
             <div class="table-responsive" role="region" aria-label="Stock por sucursal" tabindex="0">
-                <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th></tr></thead><tbody>
-                <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td></tr><?php endforeach; ?>
-                <?php if (!$providerStock['rows']): ?><tr><td colspan="6" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
+                <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Sucursales</th></tr></thead><tbody>
+                <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
+                <?php if (!$providerStock['rows']): ?><tr><td colspan="7" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
                 </tbody></table>
             </div>
         <?php endif; ?>

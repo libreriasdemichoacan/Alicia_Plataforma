@@ -313,3 +313,74 @@ function remote_provider_stock(string $providerCode, ?int $branchId = null): arr
         return ['enabled' => true, 'error' => 'No fue posible consultar el stock de la sucursal en este momento.', 'rows' => [], 'branch' => $branch];
     }
 }
+
+function remote_provider_stock_for_branches(string $providerCode, array $branchIds): array
+{
+    $providerCode = trim($providerCode);
+    $branchIds = array_values(array_unique(array_filter(array_map('intval', $branchIds))));
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => [], 'branches' => []];
+    }
+    if (!$branchIds) {
+        return ['enabled' => false, 'error' => 'Selecciona al menos una sucursal activa para consultar el stock.', 'rows' => [], 'branches' => []];
+    }
+
+    $branches = [];
+    foreach ($branchIds as $branchId) {
+        $branch = report_branch($branchId);
+        if ($branch) {
+            $branches[] = $branch;
+        }
+    }
+    if (!$branches) {
+        return ['enabled' => false, 'error' => 'No se encontraron sucursales activas para consultar el stock.', 'rows' => [], 'branches' => []];
+    }
+
+    $rowsByArticle = [];
+    $errors = [];
+    foreach ($branches as $branch) {
+        try {
+            $pdo = branch_pdo($branch);
+            $stmt = $pdo->prepare('
+                SELECT l.codbar, l.titulo, l.autor, e.nombre AS editorial, l.precio, l.cantidad
+                FROM editorial e
+                INNER JOIN libro l ON l.editorial = e.e_cod
+                WHERE e.proveedor_cod = :provider_code
+                  AND l.cantidad >= 1
+                ORDER BY e.nombre, l.titulo
+                LIMIT 5000
+            ');
+            $stmt->execute([':provider_code' => $providerCode]);
+            foreach ($stmt->fetchAll() as $row) {
+                $key = implode('|', [(string)$row['codbar'], (string)$row['titulo'], (string)$row['editorial']]);
+                if (!isset($rowsByArticle[$key])) {
+                    $rowsByArticle[$key] = [
+                        'codbar' => $row['codbar'],
+                        'titulo' => $row['titulo'],
+                        'autor' => $row['autor'],
+                        'editorial' => $row['editorial'],
+                        'precio' => (float)$row['precio'],
+                        'cantidad' => 0.0,
+                        'branches' => [],
+                    ];
+                }
+                $rowsByArticle[$key]['cantidad'] += (float)$row['cantidad'];
+                $rowsByArticle[$key]['branches'][$branch['name']] = true;
+            }
+        } catch (Throwable $exception) {
+            error_log('Error al consultar stock remoto de proveedor en sucursal ' . ($branch['name'] ?? $branch['id']) . ': ' . $exception->getMessage());
+            $errors[] = $branch['name'];
+        }
+    }
+
+    $rows = array_values($rowsByArticle);
+    foreach ($rows as &$row) {
+        $row['branch_names'] = implode(', ', array_keys($row['branches']));
+        unset($row['branches']);
+    }
+    unset($row);
+    usort($rows, fn(array $a, array $b): int => [$a['editorial'], $a['titulo']] <=> [$b['editorial'], $b['titulo']]);
+
+    $error = $errors ? 'No fue posible consultar stock en: ' . implode(', ', $errors) . '.' : null;
+    return ['enabled' => true, 'error' => $error, 'rows' => $rows, 'branches' => $branches];
+}
