@@ -281,3 +281,35 @@ function build_article_sales_report_rows(array $rows): array
     unset($row);
     return ['rows' => $rows, 'totals' => $totals];
 }
+
+function remote_provider_stock(string $providerCode, ?int $branchId = null): array
+{
+    $providerCode = trim($providerCode);
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => []];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch) {
+        return ['enabled' => false, 'error' => 'Selecciona una sucursal activa para consultar el stock.', 'rows' => []];
+    }
+
+    try {
+        $pdo = branch_pdo($branch);
+        $stmt = $pdo->prepare('
+            SELECT l.codbar, l.titulo, l.autor, e.nombre AS editorial, l.precio, l.cantidad
+            FROM editorial e
+            INNER JOIN libro l ON l.editorial = e.e_cod
+            WHERE e.proveedor_cod = :provider_code
+              AND l.cantidad >= 1
+            ORDER BY e.nombre, l.titulo
+            LIMIT 5000
+        ');
+        $stmt->execute([':provider_code' => $providerCode]);
+
+        return ['enabled' => true, 'error' => null, 'rows' => $stmt->fetchAll(), 'branch' => $branch];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar stock remoto de proveedor: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar el stock de la sucursal en este momento.', 'rows' => [], 'branch' => $branch];
+    }
+}

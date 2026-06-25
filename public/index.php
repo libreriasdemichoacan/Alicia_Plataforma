@@ -5,16 +5,21 @@ require_once app_path('includes/remote_statements.php');
 $user = require_login();
 
 if (($user['account_type'] ?? 'internal') === 'third_party') {
+    $isClient = ($user['third_party_type'] ?? '') === 'client';
+    $isProvider = ($user['third_party_type'] ?? '') === 'provider';
     $articleReportRequested = isset($_GET['report_from']) || isset($_GET['report_to']);
     $reportFrom = normalize_report_date($_GET['report_from'] ?? null, date('Y-m-01'));
     $reportTo = normalize_report_date($_GET['report_to'] ?? null, date('Y-m-d'));
     if ($reportFrom > $reportTo) {
         [$reportFrom, $reportTo] = [$reportTo, $reportFrom];
     }
-    $remoteStatement = $user['third_party_type'] === 'client' ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
-    $articleReport = $user['third_party_type'] === 'client' ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
+    $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
+    $articleReport = $isClient ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
+    $stockBranches = $isProvider ? array_values(array_filter(report_branches(), fn(array $branch): bool => ($branch['status'] ?? '') === 'active')) : [];
+    $selectedStockBranchId = (int)($_GET['stock_branch_id'] ?? ($stockBranches[0]['id'] ?? 0));
+    $providerStock = $isProvider ? remote_provider_stock((string)($user['internal_number'] ?? ''), $selectedStockBranchId) : ['enabled' => false, 'error' => null, 'rows' => []];
     $statements = [];
-    if (!$remoteStatement['enabled']) {
+    if ($isClient && !$remoteStatement['enabled']) {
         $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
         $stmt->execute([$user['third_party_id']]);
         $statements = $stmt->fetchAll();
@@ -33,6 +38,38 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             <p class="muted"><?= e($user['email']) ?></p>
         </div>
     </section>
+
+    <?php if ($isProvider): ?>
+    <section class="statement-card" style="margin-top:24px">
+        <div class="statement-actions no-print">
+            <div>
+                <h2>Stock por sucursal</h2>
+                <p class="muted">Consulta el stock disponible de las editoriales asociadas a tu código interno.</p>
+            </div>
+            <form class="report-filters" method="get">
+                <label>Sucursal
+                    <select name="stock_branch_id" required>
+                        <?php foreach ($stockBranches as $branch): ?>
+                            <option value="<?= (int)$branch['id'] ?>" <?= (int)$selectedStockBranchId === (int)$branch['id'] ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <button type="submit">Consultar stock</button>
+            </form>
+        </div>
+        <?php if (!empty($providerStock['error'])): ?><div class="alert error"><?= e($providerStock['error']) ?></div><?php endif; ?>
+        <?php if (!$stockBranches): ?>
+            <p class="muted">No hay sucursales activas configuradas para consultar stock.</p>
+        <?php elseif ($providerStock['enabled']): ?>
+            <div class="table-responsive" role="region" aria-label="Stock por sucursal" tabindex="0">
+                <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th></tr></thead><tbody>
+                <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td></tr><?php endforeach; ?>
+                <?php if (!$providerStock['rows']): ?><tr><td colspan="6" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
+                </tbody></table>
+            </div>
+        <?php endif; ?>
+    </section>
+    <?php render_footer(); exit; endif; ?>
     <?php if ($user['third_party_type'] === 'client'): ?>
     <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard">
         <button type="button" class="tab-button <?= $articleReportRequested ? '' : 'is-active' ?>" data-tab-target="movements-panel" aria-controls="movements-panel" aria-selected="<?= $articleReportRequested ? 'false' : 'true' ?>">Últimos movimientos</button>
