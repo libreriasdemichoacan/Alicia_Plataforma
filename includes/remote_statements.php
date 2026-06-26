@@ -188,3 +188,252 @@ function build_sale_item_totals(array $items): array
     unset($item);
     return ['items' => $items, 'totals' => $totals];
 }
+
+function normalize_report_date(?string $date, string $fallback): string
+{
+    $date = trim((string)$date);
+    $parsed = DateTime::createFromFormat('Y-m-d', $date);
+    if (!$parsed || $parsed->format('Y-m-d') !== $date) {
+        return $fallback;
+    }
+    return $date;
+}
+
+function remote_article_sales_report(string $customerCode, ?string $from = null, ?string $to = null, ?int $branchId = null): array
+{
+    $customerCode = trim($customerCode);
+    $from = normalize_report_date($from, date('Y-m-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
+
+    if ($customerCode === '') {
+        return ['enabled' => false, 'error' => 'El cliente no tiene número interno configurado.', 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch && !app_config()['db']['remote_reports']['enabled']) {
+        return ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+
+    try {
+        $pdo = $branch ? branch_pdo($branch) : remote_reports_db();
+        $sql = "
+            SELECT libro, codbar, titulo, autor, SUM(sale_quantity) AS sale_quantity, SUM(return_quantity) AS return_quantity
+            FROM (
+                SELECT k.libro, l.codbar, l.titulo, l.autor, SUM(ABS(k.cantidad)) AS sale_quantity, 0 AS return_quantity
+                FROM kardex k
+                INNER JOIN venta v ON v.ccliente = k.cliente AND (k.idtipo = v.doc OR k.idtipo = v.id)
+                INNER JOIN libro l ON l.id = k.libro
+                WHERE k.cliente = :sale_customer
+                  AND v.fecha >= :sale_from
+                  AND v.fecha <= :sale_to
+                  AND k.tipo = '0'
+                GROUP BY k.libro, l.codbar, l.titulo, l.autor
+
+                UNION ALL
+
+                SELECT k.libro, l.codbar, l.titulo, l.autor, 0 AS sale_quantity, SUM(ABS(k.cantidad)) AS return_quantity
+                FROM kardex k
+                INNER JOIN devolucion d ON d.cliente = k.cliente AND (k.idtipo = d.id OR k.idtipo = d.idtipo)
+                INNER JOIN libro l ON l.id = k.libro
+                WHERE k.cliente = :return_customer
+                  AND d.fecha >= :return_from
+                  AND d.fecha <= :return_to
+                  AND k.tipo = '5'
+                GROUP BY k.libro, l.codbar, l.titulo, l.autor
+            ) article_movements
+            GROUP BY libro, codbar, titulo, autor
+            HAVING sale_quantity <> 0 OR return_quantity <> 0
+            ORDER BY titulo
+            LIMIT 2000
+        ";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':sale_customer' => $customerCode,
+            ':sale_from' => $from,
+            ':sale_to' => $to,
+            ':return_customer' => $customerCode,
+            ':return_from' => $from,
+            ':return_to' => $to,
+        ]);
+        $rows = build_article_sales_report_rows($stmt->fetchAll());
+
+        return ['enabled' => true, 'error' => null, 'rows' => $rows['rows'], 'from' => $from, 'to' => $to, 'totals' => $rows['totals']];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar reporte detalle de artículos remoto: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar el reporte detalle por artículos en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0]];
+    }
+}
+
+function build_article_sales_report_rows(array $rows): array
+{
+    $totals = ['sale' => 0.0, 'return' => 0.0, 'net' => 0.0];
+    foreach ($rows as &$row) {
+        $row['sale_quantity'] = (float)$row['sale_quantity'];
+        $row['return_quantity'] = (float)$row['return_quantity'];
+        $row['net_quantity'] = $row['sale_quantity'] - $row['return_quantity'];
+        $totals['sale'] += $row['sale_quantity'];
+        $totals['return'] += $row['return_quantity'];
+        $totals['net'] += $row['net_quantity'];
+    }
+    unset($row);
+    return ['rows' => $rows, 'totals' => $totals];
+}
+
+function remote_provider_stock(string $providerCode, ?int $branchId = null): array
+{
+    $providerCode = trim($providerCode);
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => []];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch) {
+        return ['enabled' => false, 'error' => 'Selecciona una sucursal activa para consultar el stock.', 'rows' => []];
+    }
+
+    try {
+        $pdo = branch_pdo($branch);
+        $stmt = $pdo->prepare('
+            SELECT l.codbar, l.titulo, l.autor, e.nombre AS editorial, l.precio, l.cantidad
+            FROM editorial e
+            INNER JOIN libro l ON l.editorial = e.e_cod
+            WHERE e.proveedor_cod = :provider_code
+              AND l.cantidad >= 1
+            ORDER BY e.nombre, l.titulo
+            LIMIT 5000
+        ');
+        $stmt->execute([':provider_code' => $providerCode]);
+
+        return ['enabled' => true, 'error' => null, 'rows' => $stmt->fetchAll(), 'branch' => $branch];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar stock remoto de proveedor: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar el stock de la sucursal en este momento.', 'rows' => [], 'branch' => $branch];
+    }
+}
+
+function remote_provider_stock_for_branches(string $providerCode, array $branchIds): array
+{
+    $providerCode = trim($providerCode);
+    $branchIds = array_values(array_unique(array_filter(array_map('intval', $branchIds))));
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => [], 'branches' => []];
+    }
+    if (!$branchIds) {
+        return ['enabled' => false, 'error' => 'Selecciona al menos una sucursal activa para consultar el stock.', 'rows' => [], 'branches' => []];
+    }
+
+    $branches = [];
+    foreach ($branchIds as $branchId) {
+        $branch = report_branch($branchId);
+        if ($branch) {
+            $branches[] = $branch;
+        }
+    }
+    if (!$branches) {
+        return ['enabled' => false, 'error' => 'No se encontraron sucursales activas para consultar el stock.', 'rows' => [], 'branches' => []];
+    }
+
+    $rowsByArticle = [];
+    $errors = [];
+    foreach ($branches as $branch) {
+        try {
+            $pdo = branch_pdo($branch);
+            $stmt = $pdo->prepare('
+                SELECT l.codbar, l.titulo, l.autor, e.nombre AS editorial, l.precio, l.cantidad
+                FROM editorial e
+                INNER JOIN libro l ON l.editorial = e.e_cod
+                WHERE e.proveedor_cod = :provider_code
+                  AND l.cantidad >= 1
+                ORDER BY e.nombre, l.titulo
+                LIMIT 5000
+            ');
+            $stmt->execute([':provider_code' => $providerCode]);
+            foreach ($stmt->fetchAll() as $row) {
+                $key = implode('|', [(string)$row['codbar'], (string)$row['titulo'], (string)$row['editorial']]);
+                if (!isset($rowsByArticle[$key])) {
+                    $rowsByArticle[$key] = [
+                        'codbar' => $row['codbar'],
+                        'titulo' => $row['titulo'],
+                        'autor' => $row['autor'],
+                        'editorial' => $row['editorial'],
+                        'precio' => (float)$row['precio'],
+                        'cantidad' => 0.0,
+                        'branches' => [],
+                    ];
+                }
+                $rowsByArticle[$key]['cantidad'] += (float)$row['cantidad'];
+                $rowsByArticle[$key]['branches'][$branch['name']] = true;
+            }
+        } catch (Throwable $exception) {
+            error_log('Error al consultar stock remoto de proveedor en sucursal ' . ($branch['name'] ?? $branch['id']) . ': ' . $exception->getMessage());
+            $errors[] = $branch['name'];
+        }
+    }
+
+    $rows = array_values($rowsByArticle);
+    foreach ($rows as &$row) {
+        $row['branch_names'] = implode(', ', array_keys($row['branches']));
+        unset($row['branches']);
+    }
+    unset($row);
+    usort($rows, fn(array $a, array $b): int => [$a['editorial'], $a['titulo']] <=> [$b['editorial'], $b['titulo']]);
+
+    $error = $errors ? 'No fue posible consultar stock en: ' . implode(', ', $errors) . '.' : null;
+    return ['enabled' => true, 'error' => $error, 'rows' => $rows, 'branches' => $branches];
+}
+
+function remote_provider_detailed_sales(string $providerCode, ?int $branchId = null, ?string $from = null, ?string $to = null): array
+{
+    $providerCode = trim($providerCode);
+    $from = normalize_report_date($from, date('Y-m-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => null];
+    }
+
+    $branch = report_branch($branchId);
+    if (!$branch) {
+        return ['enabled' => false, 'error' => 'Selecciona una sucursal activa para consultar la venta detallada.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => null];
+    }
+
+    try {
+        $pdo = branch_pdo($branch);
+        $stmt = $pdo->prepare("
+            SELECT
+                l.codbar,
+                l.titulo,
+                l.autor,
+                l.precio,
+                l.cantidad AS stock,
+                e.nombre AS editorial,
+                COALESCE(SUM(CASE WHEN k.tipo = '0' THEN k.cantidad ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN k.tipo = '5' THEN k.cantidad ELSE 0 END), 0) AS venta_neta
+            FROM editorial e
+            INNER JOIN libro l ON e.e_cod = l.editorial
+            LEFT JOIN kardex k ON l.id = k.libro AND k.fecha BETWEEN :fecha_desde AND :fecha_hasta
+            WHERE e.proveedor_cod = :proveedor_cod
+              AND l.inactivo = '0'
+            GROUP BY l.id, e.nombre
+            ORDER BY e.nombre ASC, l.titulo ASC
+            LIMIT 1000
+        ");
+        $stmt->execute([
+            ':proveedor_cod' => $providerCode,
+            ':fecha_desde' => $from,
+            ':fecha_hasta' => $to,
+        ]);
+
+        $rows = array_values(array_filter($stmt->fetchAll(), fn(array $row): bool => (float)$row['stock'] !== 0.0 || (float)$row['venta_neta'] !== 0.0));
+
+        return ['enabled' => true, 'error' => null, 'rows' => $rows, 'from' => $from, 'to' => $to, 'branch' => $branch];
+    } catch (Throwable $exception) {
+        error_log('Error al consultar venta detallada de proveedor: ' . $exception->getMessage());
+        return ['enabled' => true, 'error' => 'No fue posible consultar la venta detallada en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => $branch];
+    }
+}

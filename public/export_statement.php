@@ -16,6 +16,8 @@ header('Pragma: no-cache');
 header('Expires: 0');
 echo "\xEF\xBB\xBF";
 
+log_portal_activity($user, 'export.excel', 'statement', 'Estado de cuenta', 'Exportación Excel de estado de cuenta');
+
 $remoteStatement = $user['third_party_type'] === 'client' ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
 ?>
 <table border="1">

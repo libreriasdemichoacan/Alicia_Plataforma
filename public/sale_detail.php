@@ -10,6 +10,7 @@ if (($user['account_type'] ?? 'internal') !== 'third_party' || ($user['third_par
 }
 
 $document = $_GET['doc'] ?? '';
+log_portal_activity($user, 'report.view', 'sale_detail', 'Detalle de venta', 'Consulta de detalle de venta', ['document' => (string)$document]);
 $detail = remote_sale_detail((string)($user['internal_number'] ?? ''), (string)$document, isset($user['branch_id']) ? (int)$user['branch_id'] : null);
 $sale = $detail['sale'];
 $customer = $detail['customer'];

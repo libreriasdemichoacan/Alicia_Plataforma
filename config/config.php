@@ -92,6 +92,9 @@ return [
             'charset' => env_value('REPORT_DB_CHARSET', 'utf8mb4'),
         ],
     ],
+    'security' => [
+        'branch_password_key' => env_value('BRANCH_DB_PASSWORD_KEY', env_value('APP_KEY', '')),
+    ],
     'logging' => [
         'enabled' => env_value('LOG_ERRORS', true),
         'display_errors' => env_value('DISPLAY_ERRORS', false),
