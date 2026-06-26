@@ -92,6 +92,32 @@ CREATE TABLE account_statements (
     FOREIGN KEY (third_party_id) REFERENCES third_parties(id) ON DELETE CASCADE
 );
 
+
+CREATE TABLE portal_activity_logs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    third_party_id INT NULL,
+    third_party_user_id INT NULL,
+    third_party_type ENUM('client','provider') NULL,
+    internal_number VARCHAR(60) NULL,
+    user_email VARCHAR(180) NULL,
+    action VARCHAR(80) NOT NULL,
+    module VARCHAR(80) NOT NULL,
+    report_name VARCHAR(120) NULL,
+    description VARCHAR(255) NULL,
+    request_method VARCHAR(10) NULL,
+    request_uri VARCHAR(500) NULL,
+    ip_address VARCHAR(45) NULL,
+    user_agent VARCHAR(500) NULL,
+    metadata JSON NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX portal_activity_third_party_idx (third_party_id),
+    INDEX portal_activity_user_idx (third_party_user_id),
+    INDEX portal_activity_action_idx (action),
+    INDEX portal_activity_created_idx (created_at),
+    CONSTRAINT portal_activity_logs_third_party_fk FOREIGN KEY (third_party_id) REFERENCES third_parties(id) ON DELETE SET NULL,
+    CONSTRAINT portal_activity_logs_third_party_user_fk FOREIGN KEY (third_party_user_id) REFERENCES third_party_users(id) ON DELETE SET NULL
+);
+
 INSERT INTO roles (name, level) VALUES ('Administrador', 100), ('Contabilidad', 50), ('Consulta', 10);
 INSERT INTO permissions (module, action) VALUES
 ('branches','view'),('branches','create'),('branches','update'),('clients','view'),('clients','create'),('clients','update'),('providers','view'),('providers','create'),('providers','update'),('users','view'),('users','create'),('settings','view'),('settings','update'),('statements','view'),('statements','create');

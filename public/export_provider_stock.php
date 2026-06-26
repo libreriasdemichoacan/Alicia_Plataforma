@@ -14,6 +14,7 @@ if (!is_array($branchIds)) {
     $branchIds = [$branchIds];
 }
 $branchIds = array_values(array_unique(array_filter(array_map('intval', $branchIds))));
+log_portal_activity($user, 'export.excel', 'provider_stock', 'Stock por sucursal', 'Exportación Excel de stock por sucursal', ['branch_ids' => $branchIds]);
 $report = remote_provider_stock_for_branches((string)($user['internal_number'] ?? ''), $branchIds);
 
 $filename = 'stock_sucursales_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $user['internal_number'] ?: $user['third_party_id']) . '_' . date('Ymd') . '.xls';

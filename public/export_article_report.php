@@ -14,6 +14,7 @@ $to = normalize_report_date($_GET['to'] ?? null, date('Y-m-d'));
 if ($from > $to) {
     [$from, $to] = [$to, $from];
 }
+log_portal_activity($user, 'export.excel', 'client_article_report', 'Reporte detalle por artículo', 'Exportación Excel de reporte detalle por artículo', ['from' => $from, 'to' => $to]);
 $report = remote_article_sales_report((string)($user['internal_number'] ?? ''), $from, $to, isset($user['branch_id']) ? (int)$user['branch_id'] : null);
 
 $filename = 'reporte_articulos_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $user['internal_number'] ?: $user['third_party_id']) . '_' . str_replace('-', '', $from) . '_' . str_replace('-', '', $to) . '.xls';

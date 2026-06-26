@@ -15,6 +15,7 @@ $to = normalize_report_date($_GET['sales_to'] ?? null, date('Y-m-d'));
 if ($from > $to) {
     [$from, $to] = [$to, $from];
 }
+log_portal_activity($user, 'export.excel', 'provider_detailed_sales', 'Venta detallada', 'Exportación Excel de venta detallada', ['branch_id' => $branchId, 'from' => $from, 'to' => $to]);
 $report = remote_provider_detailed_sales((string)($user['internal_number'] ?? ''), $branchId, $from, $to);
 
 $filename = 'venta_detallada_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $user['internal_number'] ?: $user['third_party_id']) . '_' . str_replace('-', '', $from) . '_' . str_replace('-', '', $to) . '.xls';

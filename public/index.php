@@ -41,6 +41,16 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
         $stmt->execute([$user['third_party_id']]);
         $statements = $stmt->fetchAll();
     }
+    log_portal_activity($user, 'access.dashboard', 'dashboard', null, 'Acceso al dashboard del portal');
+    if ($isClient && $articleReportRequested) {
+        log_portal_activity($user, 'report.view', 'client_article_report', 'Reporte detalle por artículo', 'Consulta de reporte detalle por artículo', ['from' => $reportFrom, 'to' => $reportTo]);
+    }
+    if ($isProvider && isset($_GET['stock_branch_ids'])) {
+        log_portal_activity($user, 'report.view', 'provider_stock', 'Stock por sucursal', 'Consulta de stock por sucursal', ['branch_ids' => $selectedStockBranchIds]);
+    }
+    if ($isProvider && $providerSalesRequested) {
+        log_portal_activity($user, 'report.view', 'provider_detailed_sales', 'Venta detallada', 'Consulta de venta detallada', ['branch_id' => $selectedSalesBranchId, 'from' => $salesFrom, 'to' => $salesTo]);
+    }
     render_header('Mi estado de cuenta', $user);
     ?>
     <section class="hero">
