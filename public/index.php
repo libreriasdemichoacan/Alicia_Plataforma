@@ -32,9 +32,16 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     if ($salesFrom > $salesTo) {
         [$salesFrom, $salesTo] = [$salesTo, $salesFrom];
     }
-    $selectedSalesBranchId = (int)($_GET['sales_branch_id'] ?? ($stockBranches[0]['id'] ?? 0));
-    $providerDetailedSales = $isProvider ? remote_provider_detailed_sales((string)($user['internal_number'] ?? ''), $selectedSalesBranchId, $salesFrom, $salesTo) : ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $salesFrom, 'to' => $salesTo, 'branch' => null];
-    $salesExportQuery = http_build_query(['sales_branch_id' => $selectedSalesBranchId, 'sales_from' => $salesFrom, 'sales_to' => $salesTo]);
+    $requestedSalesBranchIds = $_GET['sales_branch_ids'] ?? ($_GET['sales_branch_id'] ?? []);
+    if (!is_array($requestedSalesBranchIds)) {
+        $requestedSalesBranchIds = [$requestedSalesBranchIds];
+    }
+    $selectedSalesBranchIds = array_values(array_unique(array_filter(array_map('intval', $requestedSalesBranchIds))));
+    if (!$selectedSalesBranchIds && $stockBranches) {
+        $selectedSalesBranchIds = [(int)$stockBranches[0]['id']];
+    }
+    $providerDetailedSales = $isProvider ? remote_provider_detailed_sales_for_branches((string)($user['internal_number'] ?? ''), $selectedSalesBranchIds, $salesFrom, $salesTo) : ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $salesFrom, 'to' => $salesTo, 'branches' => []];
+    $salesExportQuery = http_build_query(['sales_branch_ids' => $selectedSalesBranchIds, 'sales_from' => $salesFrom, 'sales_to' => $salesTo]);
     $statements = [];
     if ($isClient && !$remoteStatement['enabled']) {
         $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
@@ -49,7 +56,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
         log_portal_activity($user, 'report.view', 'provider_stock', 'Stock por sucursal', 'Consulta de stock por sucursal', ['branch_ids' => $selectedStockBranchIds]);
     }
     if ($isProvider && $providerSalesRequested) {
-        log_portal_activity($user, 'report.view', 'provider_detailed_sales', 'Venta detallada', 'Consulta de venta detallada', ['branch_id' => $selectedSalesBranchId, 'from' => $salesFrom, 'to' => $salesTo]);
+        log_portal_activity($user, 'report.view', 'provider_detailed_sales', 'Venta detallada', 'Consulta de venta detallada', ['branch_ids' => $selectedSalesBranchIds, 'from' => $salesFrom, 'to' => $salesTo]);
     }
     render_header('Mi estado de cuenta', $user);
     ?>
@@ -114,12 +121,13 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
                         <p class="muted">Consulta venta neta por artículo para una sucursal y rango de fechas.</p>
                     </div>
                     <form class="report-filters" method="get">
-                        <label>Sucursal
-                            <select name="sales_branch_id" required>
+                        <label>Sucursales
+                            <select name="sales_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
                                 <?php foreach ($stockBranches as $branch): ?>
-                                    <option value="<?= (int)$branch['id'] ?>" <?= (int)$selectedSalesBranchId === (int)$branch['id'] ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                                    <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedSalesBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
                                 <?php endforeach; ?>
                             </select>
+                            <small class="muted">Puedes seleccionar varias sucursales.</small>
                         </label>
                         <label>Desde <input type="date" name="sales_from" value="<?= e($providerDetailedSales['from']) ?>"></label>
                         <label>Hasta <input type="date" name="sales_to" value="<?= e($providerDetailedSales['to']) ?>"></label>
@@ -131,11 +139,11 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
                 <?php if (!$stockBranches): ?>
                     <p class="muted">No hay sucursales activas configuradas para consultar venta detallada.</p>
                 <?php elseif ($providerDetailedSales['enabled']): ?>
-                    <?php if (!empty($providerDetailedSales['branch'])): ?><p class="muted">Sucursal: <?= e($providerDetailedSales['branch']['name']) ?> · Desde <?= e($providerDetailedSales['from']) ?> hasta <?= e($providerDetailedSales['to']) ?></p><?php endif; ?>
+                    <?php if (!empty($providerDetailedSales['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerDetailedSales['branches'], 'name'))) ?> · Desde <?= e($providerDetailedSales['from']) ?> hasta <?= e($providerDetailedSales['to']) ?></p><?php endif; ?>
                     <div class="table-responsive" role="region" aria-label="Venta detallada" tabindex="0">
-                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Venta neta</th></tr></thead><tbody>
-                        <?php foreach ($providerDetailedSales['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><?= e(number_format((float)$row['stock'], 0)) ?></td><td data-label="Venta neta" class="text-money"><strong><?= e(number_format((float)$row['venta_neta'], 0)) ?></strong></td></tr><?php endforeach; ?>
-                        <?php if (!$providerDetailedSales['rows']): ?><tr><td colspan="7" class="muted">Sin venta detallada para este proveedor en el rango seleccionado.</td></tr><?php endif; ?>
+                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Venta neta</th><th>Sucursales</th></tr></thead><tbody>
+                        <?php foreach ($providerDetailedSales['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><?= e(number_format((float)$row['stock'], 0)) ?></td><td data-label="Venta neta" class="text-money"><strong><?= e(number_format((float)$row['venta_neta'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
+                        <?php if (!$providerDetailedSales['rows']): ?><tr><td colspan="8" class="muted">Sin venta detallada para este proveedor en el rango seleccionado.</td></tr><?php endif; ?>
                         </tbody></table>
                     </div>
                 <?php endif; ?>

@@ -437,3 +437,69 @@ function remote_provider_detailed_sales(string $providerCode, ?int $branchId = n
         return ['enabled' => true, 'error' => 'No fue posible consultar la venta detallada en este momento.', 'rows' => [], 'from' => $from, 'to' => $to, 'branch' => $branch];
     }
 }
+
+function remote_provider_detailed_sales_for_branches(string $providerCode, array $branchIds, ?string $from = null, ?string $to = null): array
+{
+    $providerCode = trim($providerCode);
+    $from = normalize_report_date($from, date('Y-m-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
+    $branchIds = array_values(array_unique(array_filter(array_map('intval', $branchIds))));
+    if ($providerCode === '') {
+        return ['enabled' => false, 'error' => 'El proveedor no tiene número interno configurado.', 'rows' => [], 'from' => $from, 'to' => $to, 'branches' => []];
+    }
+    if (!$branchIds) {
+        return ['enabled' => false, 'error' => 'Selecciona al menos una sucursal activa para consultar la venta detallada.', 'rows' => [], 'from' => $from, 'to' => $to, 'branches' => []];
+    }
+
+    $branches = [];
+    foreach ($branchIds as $branchId) {
+        $branch = report_branch($branchId);
+        if ($branch) {
+            $branches[] = $branch;
+        }
+    }
+    if (!$branches) {
+        return ['enabled' => false, 'error' => 'No se encontraron sucursales activas para consultar la venta detallada.', 'rows' => [], 'from' => $from, 'to' => $to, 'branches' => []];
+    }
+
+    $rowsByArticle = [];
+    $errors = [];
+    foreach ($branches as $branch) {
+        $report = remote_provider_detailed_sales($providerCode, (int)$branch['id'], $from, $to);
+        if (!empty($report['error'])) {
+            $errors[] = $branch['name'];
+        }
+        foreach ($report['rows'] as $row) {
+            $key = implode('|', [(string)$row['codbar'], (string)$row['titulo'], (string)$row['editorial']]);
+            if (!isset($rowsByArticle[$key])) {
+                $rowsByArticle[$key] = [
+                    'codbar' => $row['codbar'],
+                    'titulo' => $row['titulo'],
+                    'autor' => $row['autor'],
+                    'editorial' => $row['editorial'],
+                    'precio' => (float)$row['precio'],
+                    'stock' => 0.0,
+                    'venta_neta' => 0.0,
+                    'branches' => [],
+                ];
+            }
+            $rowsByArticle[$key]['stock'] += (float)$row['stock'];
+            $rowsByArticle[$key]['venta_neta'] += (float)$row['venta_neta'];
+            $rowsByArticle[$key]['branches'][$branch['name']] = true;
+        }
+    }
+
+    $rows = array_values(array_filter($rowsByArticle, fn(array $row): bool => (float)$row['stock'] !== 0.0 || (float)$row['venta_neta'] !== 0.0));
+    foreach ($rows as &$row) {
+        $row['branch_names'] = implode(', ', array_keys($row['branches']));
+        unset($row['branches']);
+    }
+    unset($row);
+    usort($rows, fn(array $a, array $b): int => [$a['editorial'], $a['titulo']] <=> [$b['editorial'], $b['titulo']]);
+
+    $error = $errors ? 'No fue posible consultar venta detallada en: ' . implode(', ', $errors) . '.' : null;
+    return ['enabled' => true, 'error' => $error, 'rows' => $rows, 'from' => $from, 'to' => $to, 'branches' => $branches];
+}
