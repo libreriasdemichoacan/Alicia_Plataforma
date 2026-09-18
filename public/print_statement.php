@@ -14,14 +14,21 @@ $stmt = db()->prepare('SELECT legal_name, internal_number, tax_id, email, phone,
 $stmt->execute([(int)$user['third_party_id']]);
 $client = $stmt->fetch() ?: [];
 
+$from = normalize_report_date($_GET['statement_from'] ?? null, date('Y-01-01'));
+$to = normalize_report_date($_GET['statement_to'] ?? null, date('Y-m-d'));
+if ($from > $to) {
+    [$from, $to] = [$to, $from];
+}
 $remoteStatement = remote_customer_statement(
     (string)($user['internal_number'] ?? ''),
-    isset($user['branch_id']) ? (int)$user['branch_id'] : null
+    isset($user['branch_id']) ? (int)$user['branch_id'] : null,
+    $from,
+    $to
 );
 $statements = [];
 if (!$remoteStatement['enabled']) {
-    $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 1000');
-    $stmt->execute([(int)$user['third_party_id']]);
+    $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? AND statement_date BETWEEN ? AND ? ORDER BY statement_date DESC, id DESC LIMIT 1000');
+    $stmt->execute([(int)$user['third_party_id'], $from, $to]);
     $statements = $stmt->fetchAll();
 }
 
@@ -32,7 +39,7 @@ $remoteCustomer = $remoteStatement['customer'] ?? null;
 $periodFrom = $remoteStatement['from'] ?? null;
 $periodTo = $remoteStatement['to'] ?? null;
 
-log_portal_activity($user, 'report.print', 'statement', 'Estado de cuenta', 'Generación de estado de cuenta para PDF');
+log_portal_activity($user, 'report.print', 'statement', 'Estado de cuenta', 'Generación de estado de cuenta para PDF', ['from' => $from, 'to' => $to]);
 ?>
 <!doctype html>
 <html lang="es">

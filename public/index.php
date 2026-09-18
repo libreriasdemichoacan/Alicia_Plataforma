@@ -7,13 +7,20 @@ $user = require_login();
 if (($user['account_type'] ?? 'internal') === 'third_party') {
     $isClient = ($user['third_party_type'] ?? '') === 'client';
     $isProvider = ($user['third_party_type'] ?? '') === 'provider';
+    $statementRequested = isset($_GET['statement_from']) || isset($_GET['statement_to']);
+    $statementFrom = normalize_report_date($_GET['statement_from'] ?? null, date('Y-01-01'));
+    $statementTo = normalize_report_date($_GET['statement_to'] ?? null, date('Y-m-d'));
+    if ($statementFrom > $statementTo) {
+        [$statementFrom, $statementTo] = [$statementTo, $statementFrom];
+    }
     $articleReportRequested = isset($_GET['report_from']) || isset($_GET['report_to']);
     $reportFrom = normalize_report_date($_GET['report_from'] ?? null, date('Y-m-01'));
     $reportTo = normalize_report_date($_GET['report_to'] ?? null, date('Y-m-d'));
     if ($reportFrom > $reportTo) {
         [$reportFrom, $reportTo] = [$reportTo, $reportFrom];
     }
-    $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
+    $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null, $statementFrom, $statementTo) : ['enabled' => false, 'error' => null, 'movements' => [], 'from' => $statementFrom, 'to' => $statementTo];
+    $statementQuery = http_build_query(['statement_from' => $statementFrom, 'statement_to' => $statementTo]);
     $articleReport = $isClient ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
     $stockBranches = $isProvider ? array_values(array_filter(report_branches(), fn(array $branch): bool => ($branch['status'] ?? '') === 'active')) : [];
     $requestedStockBranchIds = $_GET['stock_branch_ids'] ?? ($_GET['stock_branch_id'] ?? []);
@@ -44,13 +51,16 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     $salesExportQuery = http_build_query(['sales_branch_ids' => $selectedSalesBranchIds, 'sales_from' => $salesFrom, 'sales_to' => $salesTo]);
     $statements = [];
     if ($isClient && !$remoteStatement['enabled']) {
-        $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
-        $stmt->execute([$user['third_party_id']]);
+        $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? AND statement_date BETWEEN ? AND ? ORDER BY statement_date DESC, id DESC LIMIT 1000');
+        $stmt->execute([$user['third_party_id'], $statementFrom, $statementTo]);
         $statements = $stmt->fetchAll();
     }
     log_portal_activity($user, 'access.dashboard', 'dashboard', null, 'Acceso al dashboard del portal');
     if ($isClient && $articleReportRequested) {
         log_portal_activity($user, 'report.view', 'client_article_report', 'Reporte detalle por artículo', 'Consulta de reporte detalle por artículo', ['from' => $reportFrom, 'to' => $reportTo]);
+    }
+    if ($isClient && $statementRequested) {
+        log_portal_activity($user, 'report.view', 'statement', 'Estado de cuenta', 'Consulta de estado de cuenta por rango', ['from' => $statementFrom, 'to' => $statementTo]);
     }
     if ($isProvider && isset($_GET['stock_branch_ids'])) {
         log_portal_activity($user, 'report.view', 'provider_stock', 'Stock por sucursal', 'Consulta de stock por sucursal', ['branch_ids' => $selectedStockBranchIds]);
@@ -177,7 +187,16 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
         <div id="movements-panel" class="tab-panel <?= $articleReportRequested ? '' : 'is-active' ?>" <?= $articleReportRequested ? 'hidden' : '' ?>>
     <?php endif; ?>
     <section class="statement-card" style="margin-top:24px">
-        <div class="statement-actions no-print"><h2>Últimos movimientos</h2><div class="actions"><a class="btn" href="/print_statement.php" target="_blank" rel="noopener">Generar PDF</a><a class="btn secondary" href="/export_statement.php">Descargar Excel</a></div></div>
+        <div class="statement-actions no-print">
+            <div><h2>Últimos movimientos</h2><p class="muted">Consulta el estado de cuenta por rango de fechas.</p></div>
+            <form class="report-filters" method="get">
+                <label>Desde <input type="date" name="statement_from" value="<?= e($remoteStatement['from'] ?? $statementFrom) ?>"></label>
+                <label>Hasta <input type="date" name="statement_to" value="<?= e($remoteStatement['to'] ?? $statementTo) ?>"></label>
+                <button type="submit">Consultar</button>
+                <a class="btn" href="/print_statement.php?<?= e($statementQuery) ?>" target="_blank" rel="noopener">Generar PDF</a>
+                <a class="btn secondary" href="/export_statement.php?<?= e($statementQuery) ?>">Descargar Excel</a>
+            </form>
+        </div>
         <div class="print-header"><h2>Estado de cuenta</h2><p><?= e($user['name']) ?><?php if (!empty($user['internal_number'])): ?> · <?= e($user['internal_number']) ?><?php endif; ?></p><p class="muted">Generado el <?= e(date('d/m/Y H:i')) ?></p></div>
         <?php if (!empty($remoteStatement['error'])): ?><div class="alert error"><?= e($remoteStatement['error']) ?></div><?php endif; ?>
         <?php if ($remoteStatement['enabled']): ?>

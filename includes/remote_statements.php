@@ -2,28 +2,30 @@
 require_once (getenv('APP_INCLUDES_PATH') ?: ((preg_match('/^https?:\/\//i', getenv('APP_ROOT_PATH') ?: '') ? dirname(__DIR__) : (getenv('APP_ROOT_PATH') ?: dirname(__DIR__))) . '/includes')) . '/db.php';
 require_once app_path('includes/branches.php');
 
-function remote_customer_statement(string $customerCode, ?int $branchId = null): array
+function remote_customer_statement(string $customerCode, ?int $branchId = null, ?string $from = null, ?string $to = null): array
 {
     $customerCode = trim($customerCode);
+    $from = normalize_report_date($from, date('Y-01-01'));
+    $to = normalize_report_date($to, date('Y-m-d'));
+    if ($from > $to) {
+        [$from, $to] = [$to, $from];
+    }
     if ($customerCode === '') {
-        return ['enabled' => false, 'error' => 'El cliente no tiene número interno configurado.', 'customer' => null, 'movements' => []];
+        return ['enabled' => false, 'error' => 'El cliente no tiene número interno configurado.', 'customer' => null, 'movements' => [], 'from' => $from, 'to' => $to];
     }
 
     $branch = report_branch($branchId);
     if (!$branch && !app_config()['db']['remote_reports']['enabled']) {
-        return ['enabled' => false, 'error' => null, 'customer' => null, 'movements' => []];
+        return ['enabled' => false, 'error' => null, 'customer' => null, 'movements' => [], 'from' => $from, 'to' => $to];
     }
 
     try {
         $pdo = $branch ? branch_pdo($branch) : remote_reports_db();
-        $from = date('Y-01-01');
-        $to = date('Y-m-d');
-
         $stmtCliente = $pdo->prepare('SELECT * FROM cliente WHERE c_cod = :cliente LIMIT 1');
         $stmtCliente->execute([':cliente' => $customerCode]);
         $customer = $stmtCliente->fetch();
         if (!$customer) {
-            return ['enabled' => true, 'error' => 'No se encontró el cliente en la base remota.', 'customer' => null, 'movements' => []];
+            return ['enabled' => true, 'error' => 'No se encontró el cliente en la base remota.', 'customer' => null, 'movements' => [], 'from' => $from, 'to' => $to];
         }
 
         $sql = "
@@ -71,7 +73,7 @@ function remote_customer_statement(string $customerCode, ?int $branchId = null):
         ];
     } catch (Throwable $exception) {
         error_log('Error al consultar estado de cuenta remoto: ' . $exception->getMessage());
-        return ['enabled' => true, 'error' => 'No fue posible consultar el estado de cuenta remoto en este momento.', 'customer' => null, 'movements' => []];
+        return ['enabled' => true, 'error' => 'No fue posible consultar el estado de cuenta remoto en este momento.', 'customer' => null, 'movements' => [], 'from' => $from, 'to' => $to];
     }
 }
 
