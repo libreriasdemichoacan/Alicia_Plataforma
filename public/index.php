@@ -177,7 +177,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
         <div id="movements-panel" class="tab-panel <?= $articleReportRequested ? '' : 'is-active' ?>" <?= $articleReportRequested ? 'hidden' : '' ?>>
     <?php endif; ?>
     <section class="statement-card" style="margin-top:24px">
-        <div class="statement-actions no-print"><h2>Últimos movimientos</h2><div class="actions"><button type="button" onclick="window.print()">Imprimir estado</button><a class="btn secondary" href="/export_statement.php">Descargar Excel</a></div></div>
+        <div class="statement-actions no-print"><h2>Últimos movimientos</h2><div class="actions"><a class="btn" href="/print_statement.php" target="_blank" rel="noopener">Generar PDF</a><a class="btn secondary" href="/export_statement.php">Descargar Excel</a></div></div>
         <div class="print-header"><h2>Estado de cuenta</h2><p><?= e($user['name']) ?><?php if (!empty($user['internal_number'])): ?> · <?= e($user['internal_number']) ?><?php endif; ?></p><p class="muted">Generado el <?= e(date('d/m/Y H:i')) ?></p></div>
         <?php if (!empty($remoteStatement['error'])): ?><div class="alert error"><?= e($remoteStatement['error']) ?></div><?php endif; ?>
         <?php if ($remoteStatement['enabled']): ?>
