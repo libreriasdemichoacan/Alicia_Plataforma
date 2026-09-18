@@ -1,6 +1,7 @@
 <?php
 require_once (getenv('APP_INCLUDES_PATH') ?: ((preg_match('/^https?:\/\//i', getenv('APP_ROOT_PATH') ?: '') ? dirname(__DIR__) : (getenv('APP_ROOT_PATH') ?: dirname(__DIR__))) . '/includes')) . '/db.php';
 require_once app_path('includes/security.php');
+require_once app_path('includes/audit.php');
 
 function current_user(): ?array
 {
@@ -66,12 +67,16 @@ function login(string $email, string $password): bool
     $_SESSION['user_id'] = (int)$portalUser['id'];
     $_SESSION['account_type'] = 'third_party';
     $_SESSION['last_activity'] = time();
+    log_portal_activity_for_user_id((int)$portalUser['id'], 'access.login', 'auth', null, 'Inicio de sesión en portal');
     return true;
 }
 
 function logout(): void
 {
     start_secure_session();
+    if (($_SESSION['account_type'] ?? '') === 'third_party' && !empty($_SESSION['user_id'])) {
+        log_portal_activity_for_user_id((int)$_SESSION['user_id'], 'access.logout', 'auth', null, 'Cierre de sesión en portal');
+    }
     $_SESSION = [];
     if (ini_get('session.use_cookies')) {
         $params = session_get_cookie_params();

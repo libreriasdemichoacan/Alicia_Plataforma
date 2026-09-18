@@ -2,15 +2,92 @@
 require_once (getenv('APP_INCLUDES_PATH') ?: ((preg_match('/^https?:\/\//i', getenv('APP_ROOT_PATH') ?: '') ? dirname(__DIR__) : (getenv('APP_ROOT_PATH') ?: dirname(__DIR__))) . '/includes')) . '/auth.php';
 require_once app_path('includes/layout.php');
 require_once app_path('includes/remote_statements.php');
+require_once app_path('includes/client_documents.php');
 $user = require_login();
 
 if (($user['account_type'] ?? 'internal') === 'third_party') {
-    $remoteStatement = $user['third_party_type'] === 'client' ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
+    $isClient = ($user['third_party_type'] ?? '') === 'client';
+    $isProvider = ($user['third_party_type'] ?? '') === 'provider';
+    $documentError = null;
+    if ($isClient && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '') === 'upload_client_document') {
+        verify_csrf();
+        $uploadResult = save_client_document($user, $_FILES['document'] ?? [], (string)($_POST['document_type'] ?? ''), (string)($_POST['custom_label'] ?? ''));
+        if ($uploadResult['success']) {
+            log_portal_activity($user, 'document.upload', 'client_documents', 'Documentación del cliente', 'Carga de documento protegido', ['document_id' => $uploadResult['id'], 'document_type' => (string)($_POST['document_type'] ?? '')]);
+            set_flash('Documento cargado correctamente.');
+            header('Location: /index.php?tab=documents');
+            exit;
+        }
+        $documentError = $uploadResult['error'];
+    }
+    $statementRequested = isset($_GET['statement_from']) || isset($_GET['statement_to']);
+    $statementFrom = normalize_report_date($_GET['statement_from'] ?? null, date('Y-01-01'));
+    $statementTo = normalize_report_date($_GET['statement_to'] ?? null, date('Y-m-d'));
+    if ($statementFrom > $statementTo) {
+        [$statementFrom, $statementTo] = [$statementTo, $statementFrom];
+    }
+    $articleReportRequested = isset($_GET['report_from']) || isset($_GET['report_to']);
+    $clientActiveTab = ($_GET['tab'] ?? '') === 'documents' ? 'documents' : ($articleReportRequested ? 'articles' : 'movements');
+    $reportFrom = normalize_report_date($_GET['report_from'] ?? null, date('Y-m-01'));
+    $reportTo = normalize_report_date($_GET['report_to'] ?? null, date('Y-m-d'));
+    if ($reportFrom > $reportTo) {
+        [$reportFrom, $reportTo] = [$reportTo, $reportFrom];
+    }
+    $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null, $statementFrom, $statementTo) : ['enabled' => false, 'error' => null, 'movements' => [], 'from' => $statementFrom, 'to' => $statementTo];
+    $statementQuery = http_build_query(['statement_from' => $statementFrom, 'statement_to' => $statementTo]);
+    $articleReport = $isClient ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
+    $clientDocumentTypes = $isClient ? client_document_types() : [];
+    $clientDocuments = $isClient ? client_documents_for((int)$user['third_party_id']) : [];
+    $uploadedDocumentTypes = [];
+    foreach ($clientDocuments as $clientDocument) {
+        $uploadedDocumentTypes[$clientDocument['document_type']] = true;
+    }
+    $documentCsrfToken = $isClient ? csrf_token() : '';
+    $stockBranches = $isProvider ? array_values(array_filter(report_branches(), fn(array $branch): bool => ($branch['status'] ?? '') === 'active')) : [];
+    $requestedStockBranchIds = $_GET['stock_branch_ids'] ?? ($_GET['stock_branch_id'] ?? []);
+    if (!is_array($requestedStockBranchIds)) {
+        $requestedStockBranchIds = [$requestedStockBranchIds];
+    }
+    $selectedStockBranchIds = array_values(array_unique(array_filter(array_map('intval', $requestedStockBranchIds))));
+    if (!$selectedStockBranchIds && $stockBranches) {
+        $selectedStockBranchIds = [(int)$stockBranches[0]['id']];
+    }
+    $providerStock = $isProvider ? remote_provider_stock_for_branches((string)($user['internal_number'] ?? ''), $selectedStockBranchIds) : ['enabled' => false, 'error' => null, 'rows' => [], 'branches' => []];
+    $stockExportQuery = http_build_query(['stock_branch_ids' => $selectedStockBranchIds]);
+    $providerSalesRequested = isset($_GET['sales_branch_id']) || isset($_GET['sales_from']) || isset($_GET['sales_to']);
+    $salesFrom = normalize_report_date($_GET['sales_from'] ?? null, date('Y-m-01'));
+    $salesTo = normalize_report_date($_GET['sales_to'] ?? null, date('Y-m-d'));
+    if ($salesFrom > $salesTo) {
+        [$salesFrom, $salesTo] = [$salesTo, $salesFrom];
+    }
+    $requestedSalesBranchIds = $_GET['sales_branch_ids'] ?? ($_GET['sales_branch_id'] ?? []);
+    if (!is_array($requestedSalesBranchIds)) {
+        $requestedSalesBranchIds = [$requestedSalesBranchIds];
+    }
+    $selectedSalesBranchIds = array_values(array_unique(array_filter(array_map('intval', $requestedSalesBranchIds))));
+    if (!$selectedSalesBranchIds && $stockBranches) {
+        $selectedSalesBranchIds = [(int)$stockBranches[0]['id']];
+    }
+    $providerDetailedSales = $isProvider ? remote_provider_detailed_sales_for_branches((string)($user['internal_number'] ?? ''), $selectedSalesBranchIds, $salesFrom, $salesTo) : ['enabled' => false, 'error' => null, 'rows' => [], 'from' => $salesFrom, 'to' => $salesTo, 'branches' => []];
+    $salesExportQuery = http_build_query(['sales_branch_ids' => $selectedSalesBranchIds, 'sales_from' => $salesFrom, 'sales_to' => $salesTo]);
     $statements = [];
-    if (!$remoteStatement['enabled']) {
-        $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 20');
-        $stmt->execute([$user['third_party_id']]);
+    if ($isClient && !$remoteStatement['enabled']) {
+        $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? AND statement_date BETWEEN ? AND ? ORDER BY statement_date DESC, id DESC LIMIT 1000');
+        $stmt->execute([$user['third_party_id'], $statementFrom, $statementTo]);
         $statements = $stmt->fetchAll();
+    }
+    log_portal_activity($user, 'access.dashboard', 'dashboard', null, 'Acceso al dashboard del portal');
+    if ($isClient && $articleReportRequested) {
+        log_portal_activity($user, 'report.view', 'client_article_report', 'Reporte detalle por artículo', 'Consulta de reporte detalle por artículo', ['from' => $reportFrom, 'to' => $reportTo]);
+    }
+    if ($isClient && $statementRequested) {
+        log_portal_activity($user, 'report.view', 'statement', 'Estado de cuenta', 'Consulta de estado de cuenta por rango', ['from' => $statementFrom, 'to' => $statementTo]);
+    }
+    if ($isProvider && isset($_GET['stock_branch_ids'])) {
+        log_portal_activity($user, 'report.view', 'provider_stock', 'Stock por sucursal', 'Consulta de stock por sucursal', ['branch_ids' => $selectedStockBranchIds]);
+    }
+    if ($isProvider && $providerSalesRequested) {
+        log_portal_activity($user, 'report.view', 'provider_detailed_sales', 'Venta detallada', 'Consulta de venta detallada', ['branch_ids' => $selectedSalesBranchIds, 'from' => $salesFrom, 'to' => $salesTo]);
     }
     render_header('Mi estado de cuenta', $user);
     ?>
@@ -26,8 +103,122 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             <p class="muted"><?= e($user['email']) ?></p>
         </div>
     </section>
+
+    <?php if ($isProvider): ?>
+    <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard de proveedor">
+        <button type="button" class="tab-button <?= $providerSalesRequested ? '' : 'is-active' ?>" data-tab-target="provider-stock-panel" aria-controls="provider-stock-panel" aria-selected="<?= $providerSalesRequested ? 'false' : 'true' ?>">Stock por sucursal</button>
+        <button type="button" class="tab-button <?= $providerSalesRequested ? 'is-active' : '' ?>" data-tab-target="provider-sales-panel" aria-controls="provider-sales-panel" aria-selected="<?= $providerSalesRequested ? 'true' : 'false' ?>">Venta detallada</button>
+    </section>
+    <div class="tab-panels">
+        <div id="provider-stock-panel" class="tab-panel <?= $providerSalesRequested ? '' : 'is-active' ?>" <?= $providerSalesRequested ? 'hidden' : '' ?>>
+            <section class="statement-card" style="margin-top:24px">
+                <div class="statement-actions no-print">
+                    <div>
+                        <h2>Stock por sucursal</h2>
+                        <p class="muted">Consulta el stock disponible de las editoriales asociadas a tu código interno.</p>
+                    </div>
+                    <form class="report-filters" method="get">
+                        <label>Sucursales
+                            <select name="stock_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
+                                <?php foreach ($stockBranches as $branch): ?>
+                                    <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedStockBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="muted">Puedes seleccionar varias sucursales.</small>
+                        </label>
+                        <button type="submit">Consultar stock</button>
+                        <a class="btn secondary" href="/export_provider_stock.php?<?= e($stockExportQuery) ?>">Descargar Excel</a>
+                    </form>
+                </div>
+                <?php if (!empty($providerStock['error'])): ?><div class="alert error"><?= e($providerStock['error']) ?></div><?php endif; ?>
+                <?php if (!$stockBranches): ?>
+                    <p class="muted">No hay sucursales activas configuradas para consultar stock.</p>
+                <?php elseif ($providerStock['enabled']): ?>
+                    <?php if (!empty($providerStock['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerStock['branches'], 'name'))) ?></p><?php endif; ?>
+                    <div class="table-responsive" role="region" aria-label="Stock por sucursal" tabindex="0">
+                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Sucursales</th></tr></thead><tbody>
+                        <?php foreach ($providerStock['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><strong><?= e(number_format((float)$row['cantidad'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
+                        <?php if (!$providerStock['rows']): ?><tr><td colspan="7" class="muted">Sin stock disponible para este proveedor en la sucursal seleccionada.</td></tr><?php endif; ?>
+                        </tbody></table>
+                    </div>
+                <?php endif; ?>
+            </section>
+        </div>
+        <div id="provider-sales-panel" class="tab-panel <?= $providerSalesRequested ? 'is-active' : '' ?>" <?= $providerSalesRequested ? '' : 'hidden' ?>>
+            <section class="statement-card" style="margin-top:24px">
+                <div class="statement-actions no-print">
+                    <div>
+                        <h2>Venta detallada</h2>
+                        <p class="muted">Consulta venta neta por artículo para una sucursal y rango de fechas.</p>
+                    </div>
+                    <form class="report-filters" method="get">
+                        <label>Sucursales
+                            <select name="sales_branch_ids[]" multiple size="<?= min(max(count($stockBranches), 2), 6) ?>" required>
+                                <?php foreach ($stockBranches as $branch): ?>
+                                    <option value="<?= (int)$branch['id'] ?>" <?= in_array((int)$branch['id'], $selectedSalesBranchIds, true) ? 'selected' : '' ?>><?= e($branch['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="muted">Puedes seleccionar varias sucursales.</small>
+                        </label>
+                        <label>Desde <input type="date" name="sales_from" value="<?= e($providerDetailedSales['from']) ?>"></label>
+                        <label>Hasta <input type="date" name="sales_to" value="<?= e($providerDetailedSales['to']) ?>"></label>
+                        <button type="submit">Consultar venta</button>
+                        <a class="btn secondary" href="/export_provider_sales.php?<?= e($salesExportQuery) ?>">Exportar a Excel</a>
+                    </form>
+                </div>
+                <?php if (!empty($providerDetailedSales['error'])): ?><div class="alert error"><?= e($providerDetailedSales['error']) ?></div><?php endif; ?>
+                <?php if (!$stockBranches): ?>
+                    <p class="muted">No hay sucursales activas configuradas para consultar venta detallada.</p>
+                <?php elseif ($providerDetailedSales['enabled']): ?>
+                    <?php if (!empty($providerDetailedSales['branches'])): ?><p class="muted">Concentrado de: <?= e(implode(', ', array_column($providerDetailedSales['branches'], 'name'))) ?> · Desde <?= e($providerDetailedSales['from']) ?> hasta <?= e($providerDetailedSales['to']) ?></p><?php endif; ?>
+                    <div class="table-responsive" role="region" aria-label="Venta detallada" tabindex="0">
+                        <table class="data-table"><thead><tr><th>Código</th><th>Título</th><th>Autor</th><th>Editorial</th><th>Precio</th><th>Stock</th><th>Venta neta</th><th>Sucursales</th></tr></thead><tbody>
+                        <?php foreach ($providerDetailedSales['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar']) ?></td><td data-label="Título"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Editorial"><?= e($row['editorial']) ?></td><td data-label="Precio" class="text-money">$<?= e(number_format((float)$row['precio'], 2)) ?></td><td data-label="Stock" class="text-money"><?= e(number_format((float)$row['stock'], 0)) ?></td><td data-label="Venta neta" class="text-money"><strong><?= e(number_format((float)$row['venta_neta'], 0)) ?></strong></td><td data-label="Sucursales"><?= e($row['branch_names'] ?? '') ?></td></tr><?php endforeach; ?>
+                        <?php if (!$providerDetailedSales['rows']): ?><tr><td colspan="8" class="muted">Sin venta detallada para este proveedor en el rango seleccionado.</td></tr><?php endif; ?>
+                        </tbody></table>
+                    </div>
+                <?php endif; ?>
+            </section>
+        </div>
+    </div>
+    <script>
+        document.querySelectorAll('[data-tab-target]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const targetId = button.dataset.tabTarget;
+                document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+                    const isActive = tab === button;
+                    tab.classList.toggle('is-active', isActive);
+                    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                });
+                document.querySelectorAll('.tab-panel').forEach((panel) => {
+                    const isActive = panel.id === targetId;
+                    panel.classList.toggle('is-active', isActive);
+                    panel.hidden = !isActive;
+                });
+            });
+        });
+    </script>
+    <?php render_footer(); exit; endif; ?>
+    <?php if ($user['third_party_type'] === 'client'): ?>
+    <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard">
+        <button type="button" class="tab-button <?= $clientActiveTab === 'movements' ? 'is-active' : '' ?>" data-tab-target="movements-panel" aria-controls="movements-panel" aria-selected="<?= $clientActiveTab === 'movements' ? 'true' : 'false' ?>">Últimos movimientos</button>
+        <button type="button" class="tab-button <?= $clientActiveTab === 'articles' ? 'is-active' : '' ?>" data-tab-target="article-report-panel" aria-controls="article-report-panel" aria-selected="<?= $clientActiveTab === 'articles' ? 'true' : 'false' ?>">Reporte detalle por artículo</button>
+        <button type="button" class="tab-button <?= $clientActiveTab === 'documents' ? 'is-active' : '' ?>" data-tab-target="documents-panel" aria-controls="documents-panel" aria-selected="<?= $clientActiveTab === 'documents' ? 'true' : 'false' ?>">Documentos</button>
+    </section>
+    <div class="tab-panels">
+        <div id="movements-panel" class="tab-panel <?= $clientActiveTab === 'movements' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'movements' ? '' : 'hidden' ?>>
+    <?php endif; ?>
     <section class="statement-card" style="margin-top:24px">
-        <div class="statement-actions no-print"><h2>Últimos movimientos</h2><div class="actions"><button type="button" onclick="window.print()">Imprimir estado</button><a class="btn secondary" href="/export_statement.php">Descargar Excel</a></div></div>
+        <div class="statement-actions no-print">
+            <div><h2>Últimos movimientos</h2><p class="muted">Consulta el estado de cuenta por rango de fechas.</p></div>
+            <form class="report-filters" method="get">
+                <label>Desde <input type="date" name="statement_from" value="<?= e($remoteStatement['from'] ?? $statementFrom) ?>"></label>
+                <label>Hasta <input type="date" name="statement_to" value="<?= e($remoteStatement['to'] ?? $statementTo) ?>"></label>
+                <button type="submit">Consultar</button>
+                <a class="btn" href="/print_statement.php?<?= e($statementQuery) ?>" target="_blank" rel="noopener">Generar PDF</a>
+                <a class="btn secondary" href="/export_statement.php?<?= e($statementQuery) ?>">Descargar Excel</a>
+            </form>
+        </div>
         <div class="print-header"><h2>Estado de cuenta</h2><p><?= e($user['name']) ?><?php if (!empty($user['internal_number'])): ?> · <?= e($user['internal_number']) ?><?php endif; ?></p><p class="muted">Generado el <?= e(date('d/m/Y H:i')) ?></p></div>
         <?php if (!empty($remoteStatement['error'])): ?><div class="alert error"><?= e($remoteStatement['error']) ?></div><?php endif; ?>
         <?php if ($remoteStatement['enabled']): ?>
@@ -46,6 +237,94 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             </tbody></table>
         <?php endif; ?>
     </section>
+
+    <?php if ($user['third_party_type'] === 'client'): ?>
+        </div>
+        <div id="article-report-panel" class="tab-panel <?= $clientActiveTab === 'articles' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'articles' ? '' : 'hidden' ?>>
+    <section class="statement-card" style="margin-top:24px">
+        <div class="statement-actions no-print">
+            <div>
+                <h2>Reporte detalle por artículo</h2>
+                <p class="muted">Ventas menos devoluciones por artículo, consultado desde la sucursal remota.</p>
+            </div>
+            <form class="report-filters" method="get">
+                <label>Desde <input type="date" name="report_from" value="<?= e($articleReport['from']) ?>"></label>
+                <label>Hasta <input type="date" name="report_to" value="<?= e($articleReport['to']) ?>"></label>
+                <button type="submit">Consultar</button>
+                <a class="btn secondary" href="/export_article_report.php?from=<?= e(urlencode($articleReport['from'])) ?>&to=<?= e(urlencode($articleReport['to'])) ?>">Exportar a Excel</a>
+            </form>
+        </div>
+        <?php if (!empty($articleReport['error'])): ?><div class="alert error"><?= e($articleReport['error']) ?></div><?php endif; ?>
+        <?php if ($articleReport['enabled']): ?>
+            <div class="table-responsive" role="region" aria-label="Reporte detalle por artículo" tabindex="0">
+                <table class="data-table"><thead><tr><th>Código</th><th>Artículo</th><th>Autor</th><th>Venta</th><th>Devolución</th><th>Venta neta</th></tr></thead><tbody>
+                <?php foreach ($articleReport['rows'] as $row): ?><tr><td data-label="Código"><?= e($row['codbar'] ?: $row['libro']) ?></td><td data-label="Artículo"><strong><?= e($row['titulo']) ?></strong></td><td data-label="Autor"><?= e($row['autor']) ?></td><td data-label="Venta" class="text-money"><?= e(number_format((float)$row['sale_quantity'], 0)) ?></td><td data-label="Devolución" class="text-money"><?= e(number_format((float)$row['return_quantity'], 0)) ?></td><td data-label="Venta neta" class="text-money"><strong><?= e(number_format((float)$row['net_quantity'], 0)) ?></strong></td></tr><?php endforeach; ?>
+                <?php if (!$articleReport['rows']): ?><tr><td colspan="6" class="muted">Sin ventas o devoluciones por artículo en el rango seleccionado.</td></tr><?php endif; ?>
+                <?php if ($articleReport['rows']): ?><tr><td colspan="3"><strong>Totales</strong></td><td class="text-money"><strong><?= e(number_format((float)$articleReport['totals']['sale'], 0)) ?></strong></td><td class="text-money"><strong><?= e(number_format((float)$articleReport['totals']['return'], 0)) ?></strong></td><td class="text-money"><strong><?= e(number_format((float)$articleReport['totals']['net'], 0)) ?></strong></td></tr><?php endif; ?>
+                </tbody></table>
+            </div>
+        <?php else: ?>
+            <p class="muted">El reporte detalle requiere una sucursal remota asignada o la conexión remota global activa.</p>
+        <?php endif; ?>
+    </section>
+        </div>
+        <div id="documents-panel" class="tab-panel <?= $clientActiveTab === 'documents' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'documents' ? '' : 'hidden' ?>>
+            <section class="statement-card document-center" style="margin-top:24px">
+                <div class="document-center__header">
+                    <div><p class="eyebrow">Expediente digital</p><h2>Documentación requerida</h2><p class="muted">Favor de anexar copia legible de la siguiente documentación.</p></div>
+                    <span class="secure-storage-badge">Almacenamiento protegido</span>
+                </div>
+                <?php if ($message = flash_message()): ?><div class="alert"><?= e($message) ?></div><?php endif; ?>
+                <?php if ($documentError): ?><div class="alert error"><?= e($documentError) ?></div><?php endif; ?>
+                <div class="document-layout">
+                    <div class="document-checklist">
+                        <?php foreach ($clientDocumentTypes as $typeKey => $typeLabel): ?>
+                            <?php if ($typeKey === 'other') continue; ?>
+                            <div class="document-requirement <?= isset($uploadedDocumentTypes[$typeKey]) ? 'is-complete' : '' ?>">
+                                <span class="document-check" aria-hidden="true"><?= isset($uploadedDocumentTypes[$typeKey]) ? '✓' : '□' ?></span>
+                                <span><?= e($typeLabel) ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <form class="document-upload" method="post" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="<?= e($documentCsrfToken) ?>">
+                        <input type="hidden" name="action" value="upload_client_document">
+                        <h3>Subir documento</h3>
+                        <div class="form-row"><label for="document_type">Tipo de documento</label><select id="document_type" name="document_type" required><?php foreach ($clientDocumentTypes as $typeKey => $typeLabel): ?><option value="<?= e($typeKey) ?>"><?= e($typeLabel) ?></option><?php endforeach; ?></select></div>
+                        <div class="form-row"><label for="custom_label">Descripción adicional</label><input id="custom_label" name="custom_label" maxlength="180" placeholder="Obligatoria para documentos varios"></div>
+                        <div class="form-row"><label for="client_document">Archivo</label><input id="client_document" type="file" name="document" accept="application/pdf,image/jpeg,image/png,image/webp" required><small class="muted">Solo PDF, JPG, PNG o WEBP. Tamaño máximo: 10 MB.</small></div>
+                        <button type="submit">Subir de forma segura</button>
+                    </form>
+                </div>
+                <div class="uploaded-documents">
+                    <h3>Documentos cargados</h3>
+                    <?php if ($clientDocuments): ?>
+                        <div class="table-responsive" role="region" aria-label="Documentos cargados" tabindex="0"><table class="data-table"><thead><tr><th>Documento</th><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>
+                        <?php foreach ($clientDocuments as $document): ?><tr><td data-label="Documento"><strong><?= e($document['custom_label'] ?: ($clientDocumentTypes[$document['document_type']] ?? 'Documento')) ?></strong></td><td data-label="Archivo"><?= e($document['original_name']) ?></td><td data-label="Formato"><?= e(strtoupper(str_replace(['application/', 'image/'], '', $document['mime_type']))) ?></td><td data-label="Tamaño"><?= e(number_format((float)$document['file_size'] / 1024, 1)) ?> KB</td><td data-label="Fecha"><?= e(date('d/m/Y H:i', strtotime($document['created_at']))) ?></td><td data-label="Acción"><a class="btn secondary btn-sm" href="/client_document.php?id=<?= (int)$document['id'] ?>">Descargar</a></td></tr><?php endforeach; ?>
+                        </tbody></table></div>
+                    <?php else: ?><div class="empty-state"><strong>Aún no hay documentos cargados.</strong><span class="muted">Selecciona un tipo de documento y adjunta un archivo para comenzar.</span></div><?php endif; ?>
+                </div>
+            </section>
+        </div>
+    </div>
+    <script>
+        document.querySelectorAll('[data-tab-target]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const targetId = button.dataset.tabTarget;
+                document.querySelectorAll('[data-tab-target]').forEach((tab) => {
+                    const isActive = tab === button;
+                    tab.classList.toggle('is-active', isActive);
+                    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                });
+                document.querySelectorAll('.tab-panel').forEach((panel) => {
+                    const isActive = panel.id === targetId;
+                    panel.classList.toggle('is-active', isActive);
+                    panel.hidden = !isActive;
+                });
+            });
+        });
+    </script>
+    <?php endif; ?>
     <?php
     render_footer();
     exit;

@@ -2,6 +2,7 @@
 require_once (getenv('APP_INCLUDES_PATH') ?: ((preg_match('/^https?:\/\//i', getenv('APP_ROOT_PATH') ?: '') ? dirname(__DIR__, 2) : (getenv('APP_ROOT_PATH') ?: dirname(__DIR__, 2))) . '/includes')) . '/auth.php';
 require_once app_path('includes/layout.php');
 require_once app_path('includes/branches.php');
+require_once app_path('includes/crypto.php');
 
 $user = require_login();
 require_permission('branches');
@@ -18,24 +19,25 @@ if ($editingId > 0) {
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     verify_csrf();
     $id = (int)($_POST['id'] ?? 0);
-    $data = [trim($_POST['name']), trim($_POST['db_host']), trim($_POST['db_port'] ?: '3306'), trim($_POST['db_name']), trim($_POST['db_user']), $_POST['db_pass'] ?? '', trim($_POST['db_charset'] ?: 'utf8mb4'), $_POST['status'] ?? 'active'];
+    $data = [trim($_POST['name']), trim($_POST['db_host']), trim($_POST['db_port'] ?: '3306'), trim($_POST['db_name']), trim($_POST['db_user']), trim($_POST['db_charset'] ?: 'utf8mb4'), $_POST['status'] ?? 'active'];
+    $password = (string)($_POST['db_pass'] ?? '');
     if ($data[0] === '' || $data[1] === '' || $data[3] === '' || $data[4] === '') {
         $error = 'Nombre, host, base de datos y usuario son obligatorios.';
     } elseif ($id > 0) {
         require_permission('branches', 'update');
-        if ($data[5] === '') {
+        if ($password === '') {
             $stmt = db()->prepare('UPDATE report_branches SET name=?, db_host=?, db_port=?, db_name=?, db_user=?, db_charset=?, status=? WHERE id=?');
-            $stmt->execute([$data[0], $data[1], $data[2], $data[3], $data[4], $data[6], $data[7], $id]);
+            $stmt->execute([...$data, $id]);
         } else {
             $stmt = db()->prepare('UPDATE report_branches SET name=?, db_host=?, db_port=?, db_name=?, db_user=?, db_pass=?, db_charset=?, status=? WHERE id=?');
-            $stmt->execute([...$data, $id]);
+            $stmt->execute([$data[0], $data[1], $data[2], $data[3], $data[4], encrypt_branch_password($password), $data[5], $data[6], $id]);
         }
         set_flash('Sucursal actualizada correctamente.');
         header('Location: /admin/branches.php'); exit;
     } else {
         require_permission('branches', 'create');
         $stmt = db()->prepare('INSERT INTO report_branches (name, db_host, db_port, db_name, db_user, db_pass, db_charset, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute($data);
+        $stmt->execute([$data[0], $data[1], $data[2], $data[3], $data[4], encrypt_branch_password($password), $data[5], $data[6]]);
         set_flash('Sucursal registrada correctamente.');
         header('Location: /admin/branches.php'); exit;
     }

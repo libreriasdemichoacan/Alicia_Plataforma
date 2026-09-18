@@ -16,20 +16,28 @@ header('Pragma: no-cache');
 header('Expires: 0');
 echo "\xEF\xBB\xBF";
 
-$remoteStatement = $user['third_party_type'] === 'client' ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'movements' => []];
+$from = normalize_report_date($_GET['statement_from'] ?? null, date('Y-01-01'));
+$to = normalize_report_date($_GET['statement_to'] ?? null, date('Y-m-d'));
+if ($from > $to) {
+    [$from, $to] = [$to, $from];
+}
+log_portal_activity($user, 'export.excel', 'statement', 'Estado de cuenta', 'Exportación Excel de estado de cuenta', ['from' => $from, 'to' => $to]);
+
+$remoteStatement = $user['third_party_type'] === 'client' ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null, $from, $to) : ['enabled' => false, 'error' => null, 'movements' => [], 'from' => $from, 'to' => $to];
 ?>
 <table border="1">
     <tr><th colspan="8">Estado de cuenta</th></tr>
     <tr><td>Nombre</td><td colspan="7"><?= e($user['name']) ?></td></tr>
     <tr><td>Número interno</td><td colspan="7"><?= e($user['internal_number'] ?? '') ?></td></tr>
     <tr><td>Fecha de descarga</td><td colspan="7"><?= e(date('Y-m-d H:i:s')) ?></td></tr>
+    <tr><td>Periodo</td><td colspan="7"><?= e($from) ?> al <?= e($to) ?></td></tr>
     <?php if ($remoteStatement['enabled']): ?>
         <tr><th>Documento</th><th>Tipo</th><th>Fecha</th><th>Vence</th><th>Cargos</th><th>Abonos</th><th>Saldo</th><th>Observaciones</th></tr>
         <?php foreach ($remoteStatement['movements'] as $row): ?>
             <tr><td><?= e($row['document_label']) ?></td><td><?= e($row['type_label']) ?></td><td><?= e($row['fecha']) ?></td><td><?= e($row['due_date']) ?></td><td><?= e(number_format((float)$row['cargos'], 2, '.', '')) ?></td><td><?= e(number_format((float)$row['abonos'], 2, '.', '')) ?></td><td><?= e(number_format((float)$row['render_balance'], 2, '.', '')) ?></td><td><?= e((string)$row['obs']) ?></td></tr>
         <?php endforeach; ?>
     <?php else: ?>
-        <?php $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? ORDER BY statement_date DESC, id DESC LIMIT 1000'); $stmt->execute([$user['third_party_id']]); $statements = $stmt->fetchAll(); ?>
+        <?php $stmt = db()->prepare('SELECT statement_date, concept, debit, credit, balance FROM account_statements WHERE third_party_id = ? AND statement_date BETWEEN ? AND ? ORDER BY statement_date DESC, id DESC LIMIT 1000'); $stmt->execute([$user['third_party_id'], $from, $to]); $statements = $stmt->fetchAll(); ?>
         <tr><th>Fecha</th><th colspan="3">Concepto</th><th>Cargo</th><th>Abono</th><th>Saldo</th><th></th></tr>
         <?php foreach ($statements as $row): ?>
             <tr><td><?= e($row['statement_date']) ?></td><td colspan="3"><?= e($row['concept']) ?></td><td><?= e(number_format((float)$row['debit'], 2, '.', '')) ?></td><td><?= e(number_format((float)$row['credit'], 2, '.', '')) ?></td><td><?= e(number_format((float)$row['balance'], 2, '.', '')) ?></td><td></td></tr>
