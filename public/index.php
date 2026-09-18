@@ -2,11 +2,24 @@
 require_once (getenv('APP_INCLUDES_PATH') ?: ((preg_match('/^https?:\/\//i', getenv('APP_ROOT_PATH') ?: '') ? dirname(__DIR__) : (getenv('APP_ROOT_PATH') ?: dirname(__DIR__))) . '/includes')) . '/auth.php';
 require_once app_path('includes/layout.php');
 require_once app_path('includes/remote_statements.php');
+require_once app_path('includes/client_documents.php');
 $user = require_login();
 
 if (($user['account_type'] ?? 'internal') === 'third_party') {
     $isClient = ($user['third_party_type'] ?? '') === 'client';
     $isProvider = ($user['third_party_type'] ?? '') === 'provider';
+    $documentError = null;
+    if ($isClient && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '') === 'upload_client_document') {
+        verify_csrf();
+        $uploadResult = save_client_document($user, $_FILES['document'] ?? [], (string)($_POST['document_type'] ?? ''), (string)($_POST['custom_label'] ?? ''));
+        if ($uploadResult['success']) {
+            log_portal_activity($user, 'document.upload', 'client_documents', 'Documentación del cliente', 'Carga de documento protegido', ['document_id' => $uploadResult['id'], 'document_type' => (string)($_POST['document_type'] ?? '')]);
+            set_flash('Documento cargado correctamente.');
+            header('Location: /index.php?tab=documents');
+            exit;
+        }
+        $documentError = $uploadResult['error'];
+    }
     $statementRequested = isset($_GET['statement_from']) || isset($_GET['statement_to']);
     $statementFrom = normalize_report_date($_GET['statement_from'] ?? null, date('Y-01-01'));
     $statementTo = normalize_report_date($_GET['statement_to'] ?? null, date('Y-m-d'));
@@ -14,6 +27,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
         [$statementFrom, $statementTo] = [$statementTo, $statementFrom];
     }
     $articleReportRequested = isset($_GET['report_from']) || isset($_GET['report_to']);
+    $clientActiveTab = ($_GET['tab'] ?? '') === 'documents' ? 'documents' : ($articleReportRequested ? 'articles' : 'movements');
     $reportFrom = normalize_report_date($_GET['report_from'] ?? null, date('Y-m-01'));
     $reportTo = normalize_report_date($_GET['report_to'] ?? null, date('Y-m-d'));
     if ($reportFrom > $reportTo) {
@@ -22,6 +36,13 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     $remoteStatement = $isClient ? remote_customer_statement((string)($user['internal_number'] ?? ''), isset($user['branch_id']) ? (int)$user['branch_id'] : null, $statementFrom, $statementTo) : ['enabled' => false, 'error' => null, 'movements' => [], 'from' => $statementFrom, 'to' => $statementTo];
     $statementQuery = http_build_query(['statement_from' => $statementFrom, 'statement_to' => $statementTo]);
     $articleReport = $isClient ? remote_article_sales_report((string)($user['internal_number'] ?? ''), $reportFrom, $reportTo, isset($user['branch_id']) ? (int)$user['branch_id'] : null) : ['enabled' => false, 'error' => null, 'rows' => [], 'totals' => ['sale' => 0, 'return' => 0, 'net' => 0], 'from' => $reportFrom, 'to' => $reportTo];
+    $clientDocumentTypes = $isClient ? client_document_types() : [];
+    $clientDocuments = $isClient ? client_documents_for((int)$user['third_party_id']) : [];
+    $uploadedDocumentTypes = [];
+    foreach ($clientDocuments as $clientDocument) {
+        $uploadedDocumentTypes[$clientDocument['document_type']] = true;
+    }
+    $documentCsrfToken = $isClient ? csrf_token() : '';
     $stockBranches = $isProvider ? array_values(array_filter(report_branches(), fn(array $branch): bool => ($branch['status'] ?? '') === 'active')) : [];
     $requestedStockBranchIds = $_GET['stock_branch_ids'] ?? ($_GET['stock_branch_id'] ?? []);
     if (!is_array($requestedStockBranchIds)) {
@@ -180,11 +201,12 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
     <?php render_footer(); exit; endif; ?>
     <?php if ($user['third_party_type'] === 'client'): ?>
     <section class="dashboard-tabs no-print" aria-label="Secciones del dashboard">
-        <button type="button" class="tab-button <?= $articleReportRequested ? '' : 'is-active' ?>" data-tab-target="movements-panel" aria-controls="movements-panel" aria-selected="<?= $articleReportRequested ? 'false' : 'true' ?>">Últimos movimientos</button>
-        <button type="button" class="tab-button <?= $articleReportRequested ? 'is-active' : '' ?>" data-tab-target="article-report-panel" aria-controls="article-report-panel" aria-selected="<?= $articleReportRequested ? 'true' : 'false' ?>">Reporte detalle por artículo</button>
+        <button type="button" class="tab-button <?= $clientActiveTab === 'movements' ? 'is-active' : '' ?>" data-tab-target="movements-panel" aria-controls="movements-panel" aria-selected="<?= $clientActiveTab === 'movements' ? 'true' : 'false' ?>">Últimos movimientos</button>
+        <button type="button" class="tab-button <?= $clientActiveTab === 'articles' ? 'is-active' : '' ?>" data-tab-target="article-report-panel" aria-controls="article-report-panel" aria-selected="<?= $clientActiveTab === 'articles' ? 'true' : 'false' ?>">Reporte detalle por artículo</button>
+        <button type="button" class="tab-button <?= $clientActiveTab === 'documents' ? 'is-active' : '' ?>" data-tab-target="documents-panel" aria-controls="documents-panel" aria-selected="<?= $clientActiveTab === 'documents' ? 'true' : 'false' ?>">Documentos</button>
     </section>
     <div class="tab-panels">
-        <div id="movements-panel" class="tab-panel <?= $articleReportRequested ? '' : 'is-active' ?>" <?= $articleReportRequested ? 'hidden' : '' ?>>
+        <div id="movements-panel" class="tab-panel <?= $clientActiveTab === 'movements' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'movements' ? '' : 'hidden' ?>>
     <?php endif; ?>
     <section class="statement-card" style="margin-top:24px">
         <div class="statement-actions no-print">
@@ -218,7 +240,7 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
 
     <?php if ($user['third_party_type'] === 'client'): ?>
         </div>
-        <div id="article-report-panel" class="tab-panel <?= $articleReportRequested ? 'is-active' : '' ?>" <?= $articleReportRequested ? '' : 'hidden' ?>>
+        <div id="article-report-panel" class="tab-panel <?= $clientActiveTab === 'articles' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'articles' ? '' : 'hidden' ?>>
     <section class="statement-card" style="margin-top:24px">
         <div class="statement-actions no-print">
             <div>
@@ -245,6 +267,44 @@ if (($user['account_type'] ?? 'internal') === 'third_party') {
             <p class="muted">El reporte detalle requiere una sucursal remota asignada o la conexión remota global activa.</p>
         <?php endif; ?>
     </section>
+        </div>
+        <div id="documents-panel" class="tab-panel <?= $clientActiveTab === 'documents' ? 'is-active' : '' ?>" <?= $clientActiveTab === 'documents' ? '' : 'hidden' ?>>
+            <section class="statement-card document-center" style="margin-top:24px">
+                <div class="document-center__header">
+                    <div><p class="eyebrow">Expediente digital</p><h2>Documentación requerida</h2><p class="muted">Favor de anexar copia legible de la siguiente documentación.</p></div>
+                    <span class="secure-storage-badge">Almacenamiento protegido</span>
+                </div>
+                <?php if ($message = flash_message()): ?><div class="alert"><?= e($message) ?></div><?php endif; ?>
+                <?php if ($documentError): ?><div class="alert error"><?= e($documentError) ?></div><?php endif; ?>
+                <div class="document-layout">
+                    <div class="document-checklist">
+                        <?php foreach ($clientDocumentTypes as $typeKey => $typeLabel): ?>
+                            <?php if ($typeKey === 'other') continue; ?>
+                            <div class="document-requirement <?= isset($uploadedDocumentTypes[$typeKey]) ? 'is-complete' : '' ?>">
+                                <span class="document-check" aria-hidden="true"><?= isset($uploadedDocumentTypes[$typeKey]) ? '✓' : '□' ?></span>
+                                <span><?= e($typeLabel) ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <form class="document-upload" method="post" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="<?= e($documentCsrfToken) ?>">
+                        <input type="hidden" name="action" value="upload_client_document">
+                        <h3>Subir documento</h3>
+                        <div class="form-row"><label for="document_type">Tipo de documento</label><select id="document_type" name="document_type" required><?php foreach ($clientDocumentTypes as $typeKey => $typeLabel): ?><option value="<?= e($typeKey) ?>"><?= e($typeLabel) ?></option><?php endforeach; ?></select></div>
+                        <div class="form-row"><label for="custom_label">Descripción adicional</label><input id="custom_label" name="custom_label" maxlength="180" placeholder="Obligatoria para documentos varios"></div>
+                        <div class="form-row"><label for="client_document">Archivo</label><input id="client_document" type="file" name="document" accept="application/pdf,image/jpeg,image/png,image/webp" required><small class="muted">Solo PDF, JPG, PNG o WEBP. Tamaño máximo: 10 MB.</small></div>
+                        <button type="submit">Subir de forma segura</button>
+                    </form>
+                </div>
+                <div class="uploaded-documents">
+                    <h3>Documentos cargados</h3>
+                    <?php if ($clientDocuments): ?>
+                        <div class="table-responsive" role="region" aria-label="Documentos cargados" tabindex="0"><table class="data-table"><thead><tr><th>Documento</th><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>
+                        <?php foreach ($clientDocuments as $document): ?><tr><td data-label="Documento"><strong><?= e($document['custom_label'] ?: ($clientDocumentTypes[$document['document_type']] ?? 'Documento')) ?></strong></td><td data-label="Archivo"><?= e($document['original_name']) ?></td><td data-label="Formato"><?= e(strtoupper(str_replace(['application/', 'image/'], '', $document['mime_type']))) ?></td><td data-label="Tamaño"><?= e(number_format((float)$document['file_size'] / 1024, 1)) ?> KB</td><td data-label="Fecha"><?= e(date('d/m/Y H:i', strtotime($document['created_at']))) ?></td><td data-label="Acción"><a class="btn secondary btn-sm" href="/client_document.php?id=<?= (int)$document['id'] ?>">Descargar</a></td></tr><?php endforeach; ?>
+                        </tbody></table></div>
+                    <?php else: ?><div class="empty-state"><strong>Aún no hay documentos cargados.</strong><span class="muted">Selecciona un tipo de documento y adjunta un archivo para comenzar.</span></div><?php endif; ?>
+                </div>
+            </section>
         </div>
     </div>
     <script>
