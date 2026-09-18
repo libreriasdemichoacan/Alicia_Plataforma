@@ -32,6 +32,7 @@ php -S localhost:8000 -t public
 - `BRANCH_DB_PASSWORD_KEY` define la llave usada para cifrar las contraseñas `db_pass` de `report_branches`; guárdala fuera de la base de datos, no la cambies después de cifrar registros y usa `database/migrations/2026_06_25_encrypt_report_branch_passwords.php` para cifrar sucursales existentes.
 - `portal_activity_logs` guarda accesos, consultas de reportes y exportaciones Excel de clientes/proveedores con fecha, hora, usuario, IP, navegador y metadatos del reporte.
 - Los documentos del cliente se guardan fuera de `public`, en `APP_STORAGE_PATH/client_documents`, con nombres aleatorios; únicamente se entregan mediante una ruta autenticada que valida la propiedad del documento.
+- En Windows, `APP_STORAGE_PATH` puede configurarse con rutas como `C:\Alicia\storage` o rutas UNC; el módulo normaliza separadores y utiliza el separador nativo del sistema operativo.
 - `LOGIN_TITLE` permite cambiar el título del formulario de inicio de sesión desde `.env`.
 - El logo general se cambia desde **Configuración** en la zona admin; los archivos se guardan en `public/uploads/logos` y la ruta activa queda en `app_settings.app_logo_path`.
 - Los logos de clientes y proveedores se cargan desde sus formularios de alta/edición y se guardan en `public/uploads/clients` o `public/uploads/providers`.

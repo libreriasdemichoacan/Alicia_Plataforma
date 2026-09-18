@@ -17,7 +17,7 @@ if (!client_document_storage_is_secure()) {
     http_response_code(500);
     exit('El almacenamiento de documentos no está configurado de forma segura.');
 }
-$path = client_document_storage_path() . '/' . basename($document['stored_name']);
+$path = client_document_file_path((string)$document['stored_name']);
 if (!is_file($path) || !is_readable($path)) {
     http_response_code(404);
     exit('Archivo no encontrado.');

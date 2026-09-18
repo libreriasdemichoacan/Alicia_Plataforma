@@ -26,13 +26,49 @@ function client_documents_for(int $thirdPartyId): array
 
 function client_document_storage_path(): string
 {
-    return rtrim(app_config()['paths']['storage'], '/\\') . '/client_documents';
+    $path = client_document_canonical_path((string)app_config()['paths']['storage'] . '/client_documents');
+    return DIRECTORY_SEPARATOR === '\\' ? str_replace('/', '\\', $path) : $path;
+}
+
+function client_document_canonical_path(string $path): string
+{
+    $path = str_replace('\\', '/', trim($path));
+    $prefix = '';
+    if (preg_match('/^[A-Za-z]:\//', $path) === 1) {
+        $prefix = strtoupper(substr($path, 0, 2)) . '/';
+        $path = substr($path, 3);
+    } elseif (str_starts_with($path, '//')) {
+        $prefix = '//';
+        $path = ltrim($path, '/');
+    } elseif (str_starts_with($path, '/')) {
+        $prefix = '/';
+        $path = ltrim($path, '/');
+    }
+
+    $segments = [];
+    foreach (explode('/', $path) as $segment) {
+        if ($segment === '' || $segment === '.') {
+            continue;
+        }
+        if ($segment === '..') {
+            array_pop($segments);
+            continue;
+        }
+        $segments[] = $segment;
+    }
+
+    return $prefix . implode('/', $segments);
+}
+
+function client_document_file_path(string $storedName): string
+{
+    return rtrim(client_document_storage_path(), '/\\') . DIRECTORY_SEPARATOR . basename($storedName);
 }
 
 function client_document_storage_is_secure(): bool
 {
-    $storage = str_replace('\\', '/', rtrim(client_document_storage_path(), '/\\')) . '/';
-    $public = str_replace('\\', '/', rtrim(app_config()['paths']['public'], '/\\')) . '/';
+    $storage = rtrim(client_document_canonical_path(client_document_storage_path()), '/') . '/';
+    $public = rtrim(client_document_canonical_path((string)app_config()['paths']['public']), '/') . '/';
     return !str_starts_with(strtolower($storage), strtolower($public));
 }
 
@@ -81,7 +117,7 @@ function save_client_document(array $user, array $file, string $documentType, st
         return ['success' => false, 'error' => 'No fue posible preparar el almacenamiento seguro.'];
     }
     $storedName = bin2hex(random_bytes(24)) . '.' . $extensions[$mime];
-    $destination = $storage . '/' . $storedName;
+    $destination = client_document_file_path($storedName);
     if (!move_uploaded_file($file['tmp_name'], $destination)) {
         return ['success' => false, 'error' => 'No fue posible guardar el documento.'];
     }
